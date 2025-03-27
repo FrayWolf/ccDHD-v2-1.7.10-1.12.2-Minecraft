@@ -1,0 +1,1701 @@
+--[[
+  ccDHD v2 - Enhanced Stargate Control (Computer Terminal, 51x19 Resolution)
+  Controls: M (Menu), T (Toggle Iris), F1 (Back), Up/Down (Scroll), E (Emergency Shutdown), G (Dial Gate), A (Address Book), U (User Permissions)
+]]
+
+-- Core Variables
+local modemSide = nil
+local modem = nil
+local stargates = {}
+local gateName = nil
+local config = {
+    FUEL_WARNING_THRESHOLD = 20,
+    RETRY_ATTEMPTS = 5,
+    RETRY_DELAY = 2,
+    gateNames = {},
+    gateGroups = {},
+    gatePositions = {}, -- New: Stores gate coordinates as {x = num, y = num, z = num}
+    MODEM_SIDE = "back",
+    MAX_GATES = 20,
+    SYNC_INTERVAL = 0.5,
+    DIAL_WAIT = 0.5,
+    DEFAULT_ADDRESSES = {["Earth"] = {code = "ABC123", isTrusted = true, tag = "Allies"}},
+    MAX_RECENT_ADDRESSES = 10,
+    UI_COLORS = {borders = colors.blue, buttons = colors.blue, text = colors.white, warning = colors.red},
+    LOG_FILE = "gate_log.txt",
+    MAX_VISIBLE_LINES = 13,
+    EMERGENCY_IRIS_CLOSE = true,
+    ADDRESS_MIN_LENGTH = 6,
+    ADDRESS_MAX_LENGTH = 9,
+    ADDRESS_PATTERN = "^[A-Z0-9]+$",
+    AUTO_DIAL_ADDRESS = nil,
+    PRE_DIAL_ADDRESS = false,
+    LOCKDOWN_MODE = false,
+    users = {},
+    BLOCKED_ADDRESSES = {},
+    RECOVERY_ENABLED = true
+}
+local currentUser = nil
+
+-- State Variables
+local localAddress = "Unknown"
+local gateStatus = "Disconnected"
+local irisState = false
+local dialAddress = "none"
+local incomingAddress = "none"
+local fuelGauge = 0
+local maxFuel = 203842
+local fuelHistory = {}
+local secureStatus = "allclear"
+local currentPage = 1
+local scrollPos = 1
+local selectedIndex = 1
+local maxVisibleLines = nil
+local dialingAddress = ""
+local addressBook = {}
+local addressName = ""
+local addressCode = ""
+local lastDialedAddress = nil
+local recentAddresses = {}
+local searchQuery = ""
+local logEntries = {}
+local selectedUser = ""
+
+-- Utility Functions for Password Management
+local function generateRandomPassword(length)
+    local chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*"
+    local password = ""
+    for i = 1, length or 8 do
+        local rand = math.random(1, #chars)
+        password = password .. chars:sub(rand, rand)
+    end
+    return password
+end
+
+local function generateRecoveryCode()
+    return generateRandomPassword(6)
+end
+
+local function saveRecoveryCode(code)
+    local file = fs.open("recovery_code.txt", "w")
+    if file then
+        file.write(code)
+        file.close()
+    end
+end
+
+local function loadRecoveryCode()
+    if fs.exists("recovery_code.txt") then
+        local file = fs.open("recovery_code.txt", "r")
+        if file then
+            local code = file.readAll()
+            file.close()
+            return code
+        end
+    end
+    return nil
+end
+
+-- Custom Password Input Function
+local function readPassword(prompt)
+    term.write(prompt)
+    local password = ""
+    local x, y = term.getCursorPos()
+    while true do
+        local event, param = os.pullEvent()
+        if event == "char" then
+            password = password .. param
+            term.setCursorPos(x, y)
+            term.write(string.rep("*", #password))
+        elseif event == "key" then
+            if param == keys.enter then
+                break
+            elseif param == keys.backspace and #password > 0 then
+                password = password:sub(1, -2)
+                term.setCursorPos(x, y)
+                term.write(string.rep("*", #password) .. " ")
+            end
+        end
+    end
+    term.write("\n")
+    return password
+end
+
+-- File Management with Error Handling
+local function initializeFile(filename, defaultData, isAppend)
+    if not fs or not fs.exists or not fs.open then
+        print("Error: Filesystem API (fs) not available")
+        return false
+    end
+    local success, result = pcall(function()
+        if not fs.exists(filename) then
+            local file = fs.open(filename, isAppend and "a" or "w")
+            if not file then return false end
+            if defaultData then
+                file.write(isAppend and ("Stargate Log - Initialized at " .. (os.time and os.time() or "unknown") .. "\n") or textutils.serialize(defaultData))
+            end
+            file.close()
+            return true
+        end
+        return true
+    end)
+    if not success then
+        print("Error initializing " .. filename .. ": " .. tostring(result))
+        sleep(2)
+        return false
+    end
+    return true
+end
+
+local function logAction(action)
+    if not initializeFile(config.LOG_FILE or "gate_log.txt", nil, true) then return end
+    local file = fs.open(config.LOG_FILE or "gate_log.txt", "a")
+    if not file then return end
+    local entry = tostring(os.time and os.time() or "unknown") .. " - " .. (action or "Unknown action")
+    file.writeLine(entry)
+    file.close()
+    table.insert(logEntries, 1, entry)
+    if #logEntries > 100 then table.remove(logEntries, 101) end
+end
+
+local function loadConfig()
+    print("Checking environment...")
+    if not peripheral then
+        error("Peripheral API not available. Are you running this in ComputerCraft?")
+    end
+    if not fs then
+        error("Filesystem API (fs) not available. Are you running this in ComputerCraft?")
+    end
+    if not os.time then
+        print("Warning: os.time not available, using 'unknown' for timestamps")
+    end
+    if not textutils or not textutils.serialize then
+        print("Warning: textutils.serialize not available, config saving may fail")
+    end
+
+    modemSide = config.MODEM_SIDE or "back"
+    for i = 1, config.RETRY_ATTEMPTS do
+        modem = peripheral.wrap(modemSide) or peripheral.find("modem")
+        if modem then break end
+        print("Attempt " .. i .. ": No modem found, retrying in " .. config.RETRY_DELAY .. " seconds...")
+        sleep(config.RETRY_DELAY)
+    end
+    if not modem then 
+        error("No modem found on " .. modemSide .. " or any side after retries.")
+    end
+    logAction("Modem loaded on " .. modemSide)
+
+    if fs.exists("dhd_config.txt") then
+        local file = fs.open("dhd_config.txt", "r")
+        if file then
+            local loadedConfig = textutils.unserialize(file.readAll()) or {}
+            file.close()
+            for k, v in pairs(loadedConfig) do
+                config[k] = v
+            end
+        end
+    end
+end
+
+local function saveConfig()
+    if not textutils or not textutils.serialize then return end
+    local file = fs.open("dhd_config.txt", "w")
+    if file then
+        file.write(textutils.serialize(config))
+        file.close()
+    end
+end
+
+local function initialSignup()
+    term.clear()
+    term.setCursorPos(1, 1)
+    term.write("First-time setup: Create Admin Account")
+    term.setCursorPos(1, 3)
+    term.write("Username [admin]: ")
+    local username = read() or "admin"
+    term.setCursorPos(1, 4)
+    term.write("Enter password or [R] for random: ")
+    local passwordInput = readPassword("")
+
+    -- Ensure passwordInput is a string
+    if passwordInput == nil then
+        passwordInput = ""
+    end
+
+    local password
+    if passwordInput:lower() == "r" then
+        password = generateRandomPassword(8)
+        term.setCursorPos(1, 5)
+        term.write("Generated password: " .. password)
+        term.setCursorPos(1, 6)
+        term.write("Write this down! Press Enter to continue.")
+        os.pullEvent("key")
+    else
+        if passwordInput == "" then
+            term.setCursorPos(1, 5)
+            term.setTextColor(colors.red)
+            term.write("Password cannot be empty. Try again.")
+            term.setTextColor(colors.white)
+            sleep(2)
+            return initialSignup()
+        end
+        password = passwordInput
+        term.setCursorPos(1, 5)
+        term.write("Confirm password: ")
+        local confirm = readPassword("")
+        if password ~= confirm then
+            term.setCursorPos(1, 7)
+            term.setTextColor(colors.red)
+            term.write("Passwords don’t match. Try again.")
+            term.setTextColor(colors.white)
+            sleep(2)
+            return initialSignup()
+        end
+    end
+    
+    config.users = {[username] = {password = password, role = "admin"}}
+    saveConfig()
+    local recoveryCode = generateRecoveryCode()
+    saveRecoveryCode(recoveryCode)
+    term.setCursorPos(1, 7)
+    term.write("Recovery Code: " .. recoveryCode)
+    term.setCursorPos(1, 8)
+    term.write("Save this code somewhere safe!")
+    logAction("Admin account created: " .. username)
+    term.setCursorPos(1, 10)
+    term.write("Setup complete! Login to continue.")
+    sleep(2)
+    return username
+end
+
+local function loadAddressBook()
+    if not initializeFile("addressBook.txt", config.DEFAULT_ADDRESSES or {}) then
+        addressBook = config.DEFAULT_ADDRESSES or {}
+        saveAddressBook()
+    else
+        local file = fs.open("addressBook.txt", "r")
+        if file then
+            local loaded = textutils.unserialize(file.readAll()) or {}
+            file.close()
+            addressBook = {}
+            for name, value in pairs(loaded) do
+                if type(name) == "string" and type(value) == "table" and type(value.code) == "string" then
+                    addressBook[name] = {code = value.code, isTrusted = value.isTrusted or false, tag = value.tag or ""}
+                end
+            end
+        end
+    end
+    logAction("Address book loaded")
+end
+
+local function saveAddressBook()
+    if not textutils or not textutils.serialize then return end
+    local file = fs.open("addressBook.txt", "w")
+    if file then
+        file.write(textutils.serialize(addressBook))
+        file.close()
+    end
+end
+
+local function findGates()
+    stargates = {}
+    local names = modem.getNamesRemote() or {}
+    for _, name in pairs(names) do
+        if modem.getTypeRemote(name) == "stargate" and #stargates < config.MAX_GATES then
+            table.insert(stargates, name)
+            -- Default position if not set (example: 5 blocks away in x-direction)
+            if not config.gatePositions[name] then
+                config.gatePositions[name] = {x = 5, y = 0, z = 0}
+            end
+        end
+    end
+    if #stargates > 0 then
+        gateName = stargates[1]
+        logAction("Found " .. #stargates .. " Stargates. Selected: " .. (config.gateNames[gateName] or gateName))
+        return true
+    end
+    logAction("No Stargates detected")
+    return false
+end
+
+-- New Function: Calculate distance to the selected gate
+local function calculateGateDistance()
+    if not gateName or not config.gatePositions[gateName] then
+        return "Unknown"
+    end
+    local pos = config.gatePositions[gateName]
+    -- Assuming computer is at (0, 0, 0) relative to itself
+    local distance = math.sqrt(pos.x^2 + pos.y^2 + pos.z^2)
+    return string.format("%.1f", distance) .. " blocks"
+end
+
+local function syncWithGate()
+    if not gateName then 
+        logAction("Sync failed: No gate selected")
+        return 
+    end
+    localAddress = modem.callRemote(gateName, "localAddress") or "Unknown"
+    gateStatus = modem.callRemote(gateName, "stargateState") or "Disconnected"
+    irisState = modem.callRemote(gateName, "irisState") == "Open"
+    local remoteAddr = modem.callRemote(gateName, "remoteAddress") or "none"
+    if gateStatus == "Connected" then
+        if lastDialedAddress then
+            dialAddress = lastDialedAddress
+            incomingAddress = "none"
+            for _, gate in ipairs(stargates) do
+                if gate ~= gateName then
+                    local otherAddr = modem.callRemote(gate, "localAddress") or "Unknown"
+                    if otherAddr == remoteAddr then
+                        dialAddress = "none"
+                        incomingAddress = remoteAddr
+                        logAction("Detected incoming from network gate: " .. remoteAddr)
+                        break
+                    end
+                end
+            end
+        else
+            dialAddress = "none"
+            incomingAddress = remoteAddr
+            logAction("No lastDialedAddress, assuming incoming: " .. remoteAddr)
+            if config.BLOCKED_ADDRESSES[incomingAddress] then
+                modem.callRemote(gateName, "disconnect")
+                logAction("Blocked incoming call from: " .. incomingAddress)
+                secureStatus = "blocked"
+            elseif addressBook[incomingAddress] and not addressBook[incomingAddress].isTrusted then
+                modem.callRemote(gateName, "closeIris")
+                logAction("Auto-closed iris for untrusted incoming: " .. remoteAddr)
+            end
+        end
+    else
+        dialAddress = "none"
+        incomingAddress = "none"
+        lastDialedAddress = nil
+        secureStatus = "allclear"
+    end
+    fuelGauge = modem.callRemote(gateName, "energyAvailable") or 0
+    maxFuel = 203842
+    table.insert(fuelHistory, 1, fuelGauge)
+    if #fuelHistory > 50 then table.remove(fuelHistory, 51) end
+end
+local function toggleIris()
+    if not gateName then 
+        logAction("Iris toggle failed: No gate selected")
+        return 
+    end
+    if irisState then
+        modem.callRemote(gateName, "closeIris")
+        logAction("Iris closed on " .. gateName)
+    else
+        modem.callRemote(gateName, "openIris")
+        logAction("Iris opened on " .. gateName)
+    end
+    syncWithGate()
+end
+
+local function disconnectGate()
+    if not gateName or config.LOCKDOWN_MODE then 
+        logAction("Disconnect failed: " .. (not gateName and "No gate selected" or "Lockdown active"))
+        return 
+    end
+    modem.callRemote(gateName, "disconnect")
+    logAction("Gate disconnected on " .. gateName)
+    syncWithGate()
+end
+
+local function emergencyShutdown()
+    if not gateName then 
+        logAction("Emergency shutdown failed: No gate selected")
+        return 
+    end
+    modem.callRemote(gateName, "disconnect")
+    if config.EMERGENCY_IRIS_CLOSE then
+        modem.callRemote(gateName, "closeIris")
+        logAction("Emergency: Iris closed on " .. gateName)
+    end
+    config.LOCKDOWN_MODE = true
+    logAction("Emergency shutdown executed on " .. gateName .. ", lockdown enabled")
+    syncWithGate()
+end
+
+local function toggleLockdown()
+    if not gateName then 
+        logAction("Lockdown toggle failed: No gate selected")
+        return 
+    end
+    config.LOCKDOWN_MODE = not config.LOCKDOWN_MODE
+    if config.LOCKDOWN_MODE then
+        modem.callRemote(gateName, "disconnect")
+        if config.EMERGENCY_IRIS_CLOSE then
+            modem.callRemote(gateName, "closeIris")
+        end
+        logAction("Lockdown enabled: Gate disconnected and iris closed on " .. gateName)
+    else
+        logAction("Lockdown disabled on " .. gateName)
+    end
+    syncWithGate()
+end
+
+local function isValidAddress(address)
+    return address and #address >= (config.ADDRESS_MIN_LENGTH or 6) and #address <= (config.ADDRESS_MAX_LENGTH or 9) and address:match(config.ADDRESS_PATTERN or "^[A-Z0-9]+$")
+end
+
+local function dialGate(address)
+    if not gateName then 
+        logAction("Dialing failed: No gate selected")
+        return false 
+    end
+    if config.LOCKDOWN_MODE then 
+        logAction("Dialing failed: Lockdown active")
+        return false 
+    end
+    if not isValidAddress(address) then
+        logAction("Invalid address attempted: " .. (address or "nil"))
+        return false
+    end
+    modem.callRemote(gateName, "dial", address)
+    lastDialedAddress = address
+    table.insert(recentAddresses, 1, address)
+    if #recentAddresses > (config.MAX_RECENT_ADDRESSES or 10) then table.remove(recentAddresses, (config.MAX_RECENT_ADDRESSES or 10) + 1) end
+    logAction("Dialed address: " .. address .. " on " .. (gateName or "Unknown"))
+    
+    local startTime = os.clock()
+    local maxWait = config.DIAL_WAIT or 0.5
+    while os.clock() - startTime < maxWait do
+        syncWithGate()
+        if gateStatus == "Connected" then
+            local dialTime = os.clock() - startTime
+            logAction("Gate connected in " .. string.format("%.2f", dialTime) .. " seconds")
+            return true
+        end
+        sleep(0.1)
+    end
+    syncWithGate()
+    if gateStatus == "Connected" then
+        local dialTime = os.clock() - startTime
+        logAction("Gate connected in " .. string.format("%.2f", dialTime) .. " seconds")
+    else
+        logAction("Gate failed to connect within " .. maxWait .. " seconds")
+    end
+    return gateStatus == "Connected"
+end
+
+local function preDialAddress()
+    if not config.PRE_DIAL_ADDRESS or config.AUTO_DIAL_ADDRESS or not gateName then return end
+    local firstAddress = nil
+    for _, data in pairs(addressBook) do
+        if data.code and isValidAddress(data.code) then
+            firstAddress = data.code
+            break
+        end
+    end
+    if firstAddress then
+        logAction("Pre-dialing address: " .. firstAddress)
+        modem.callRemote(gateName, "dial", firstAddress)
+    end
+end
+
+local function drawFancyBorders()
+    term.clear()
+    local width = 51
+    local height = 19
+    local borderColor = config.UI_COLORS.borders or colors.blue
+
+    term.setBackgroundColor(borderColor)
+    term.setCursorPos(1, 1)
+    term.write("#" .. string.rep("-", width - 2) .. "#")
+
+    for y = 2, height - 1 do
+        term.setBackgroundColor(borderColor)
+        term.setCursorPos(1, y)
+        term.write("|" .. string.rep(" ", width - 2) .. "|")
+    end
+
+    term.setBackgroundColor(borderColor)
+    term.setCursorPos(1, height)
+    term.write("#" .. string.rep("-", width - 2) .. "#")
+
+    term.setBackgroundColor(colors.black)
+    for y = 2, height - 1 do
+        term.setCursorPos(2, y)
+        term.write(string.rep(" ", width - 2))
+    end
+    term.setTextColor(config.UI_COLORS.text or colors.white)
+end
+
+local function updateMainPage()
+    drawFancyBorders()
+    local width = 49
+    term.setCursorPos(math.floor((width - #"DHD Command") / 2) + 2, 2)
+    term.write("DHD Command")
+    term.setCursorPos(2, 3)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #("Gate: " .. (config.gateNames[gateName] or gateName or "None"))) / 2) + 2, 4)
+    term.write("Gate: " .. (config.gateNames[gateName] or gateName or "None"))
+    term.setCursorPos(math.floor((width - #("Address: " .. localAddress)) / 2) + 2, 6)
+    term.write("Address: " .. localAddress)
+    -- New: Display distance to the selected gate
+    term.setCursorPos(math.floor((width - #("Distance: " .. calculateGateDistance())) / 2) + 2, 7)
+    term.write("Distance: " .. calculateGateDistance())
+    term.setCursorPos(math.floor((width - #("Status: ")) / 2) + 2, 8)
+    term.write("Status: ")
+    term.setTextColor(gateStatus == "Connected" and colors.green or config.UI_COLORS.warning)
+    term.write(gateStatus)
+    term.setTextColor(config.UI_COLORS.text or colors.white)
+    local gateCountStr = "System Gates: " .. tostring(#stargates)
+    term.setCursorPos(math.floor((width - #gateCountStr) / 2) + 2, 10)
+    term.write(gateCountStr)
+    term.setCursorPos(math.floor((width - #("Iris: " .. (irisState and "Open" or "Closed"))) / 2) + 2, 12)
+    term.write("Iris: " .. (irisState and "Open" or "Closed"))
+    local gateActivationStr = "Gate Activation: None"
+    if gateStatus == "Connected" then
+        if dialAddress ~= "none" then
+            gateActivationStr = "Gate Activation: " .. dialAddress .. " Active"
+        elseif incomingAddress ~= "none" then
+            gateActivationStr = "Gate Activation: " .. incomingAddress .. " Active"
+        end
+    end
+    term.setCursorPos(math.floor((width - #gateActivationStr) / 2) + 2, 14)
+    term.write(gateActivationStr)
+    local fuelPercent = math.floor((fuelGauge / maxFuel) * 100)
+    term.setCursorPos(math.floor((width - #("Power: " .. fuelPercent .. "%")) / 2) + 2, 16)
+    term.write("Power: ")
+    term.setTextColor(fuelPercent <= (config.FUEL_WARNING_THRESHOLD or 20) and config.UI_COLORS.warning or (config.UI_COLORS.text or colors.white))
+    term.write(fuelPercent .. "%")
+    term.setTextColor(config.UI_COLORS.text or colors.white)
+    term.setCursorPos(math.floor((width - #("Security: " .. secureStatus)) / 2) + 2, 17)
+    term.write("Security: ")
+    term.setTextColor(secureStatus == "intruder" and config.UI_COLORS.warning or secureStatus == "incoming" and colors.yellow or secureStatus == "blocked" and colors.orange or colors.green)
+    term.write(secureStatus)
+    term.setTextColor(config.UI_COLORS.text or colors.white)
+    if config.LOCKDOWN_MODE then
+        term.setCursorPos(math.floor((width - #"LOCKDOWN") / 2) + 2, 18)
+        term.setTextColor(config.UI_COLORS.warning)
+        term.write("LOCKDOWN")
+        term.setTextColor(config.UI_COLORS.text or colors.white)
+    end
+    term.setCursorPos(2, 18)
+    if not config.LOCKDOWN_MODE then
+        term.write(string.rep("-", width))
+    end
+    term.setBackgroundColor(colors.black)
+    term.setCursorPos(3, 19)
+    term.setTextColor(colors.red)
+    term.write("[E]mergency")
+    term.setCursorPos(43, 19)
+    term.setTextColor(colors.yellow)
+    term.write("[M]enu")
+    term.setTextColor(config.UI_COLORS.text or colors.white)
+end
+
+local function updateSystemFunctionsPage()
+    drawFancyBorders()
+    local width = 49
+    term.setCursorPos(4, 2)
+    term.write("System Functions")
+    term.setCursorPos(2, 3)
+    term.write(string.rep("-", width))
+    local funcs = {
+        "Toggle Iris", "Disconnect Gate", "Dial Gate", "Address Book", 
+        "Select Gate", "Name Gate", "Diagnostics", "Toggle Lockdown",
+        "User Permissions", "Gate Network Map", "Function 11", "Function 12", "Function 13"
+    }
+    local keyHints = {
+        "T", "D", "G", "A", "S", "N", "I", "L", 
+        "U", "M", "F11", "F12", "F13"
+    }
+    for i = 1, maxVisibleLines do
+        local funcIndex = scrollPos + i - 1
+        if funcIndex <= #funcs and funcIndex > 0 then
+            local func = funcs[funcIndex]
+            local keyHint = keyHints[funcIndex]
+            term.setCursorPos(4, 4 + i)
+            term.setTextColor(config.UI_COLORS.text or colors.white)
+            term.write(func)
+            if keyHint then
+                term.setCursorPos(width - 5, 4 + i)
+                term.setTextColor(colors.green)
+                term.write("[" .. keyHint .. "]")
+            end
+        end
+    end
+    term.setTextColor(config.UI_COLORS.text or colors.white)
+    term.setCursorPos(2, 17)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #"[F1] Back") / 2) + 2, 18)
+    term.write("[F1] Back")
+    term.setBackgroundColor(colors.black)
+end
+
+local function updateGateSelectionPage()
+    drawFancyBorders()
+    local width = 49
+    term.setCursorPos(math.floor((width - #"Gate Selection") / 2) + 2, 2)
+    term.write("Gate Selection")
+    term.setCursorPos(2, 3)
+    term.write(string.rep("-", width))
+    if #stargates == 0 then
+        term.setCursorPos(4, 5)
+        term.write("No gates detected.")
+    else
+        for i = 1, maxVisibleLines do
+            local gateIndex = scrollPos + i - 1
+            if gateIndex <= #stargates and gateIndex > 0 then
+                local name = stargates[gateIndex]
+                local displayName = config.gateNames[name] or name
+                local addr = modem.callRemote(name, "localAddress") or "Unknown"
+                local state = modem.callRemote(name, "stargateState") or "Disconnected"
+                local group = config.gateGroups[name] or "None"
+                local line = (gateIndex == selectedIndex and "> " or "  ") .. displayName .. " [" .. group .. "]: " .. addr .. " (" .. state .. ")"
+                term.setCursorPos(4, 4 + i)
+                if gateIndex == selectedIndex then
+                    term.setBackgroundColor(config.UI_COLORS.buttons or colors.blue)
+                    term.write(line .. " ")
+                    term.setBackgroundColor(colors.black)
+                else
+                    term.write(line)
+                end
+            end
+        end
+    end
+    term.setCursorPos(2, 17)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #"[S]elect  [F1] Back") / 2) + 2, 18)
+    term.write("[S]elect  [F1] Back")
+    term.setBackgroundColor(colors.black)
+end
+
+local function updateDialingPage()
+    drawFancyBorders()
+    local width = 49
+    term.setCursorPos(math.floor((width - #"Enter Gate Address") / 2) + 2, 2)
+    term.write("Enter Gate Address")
+    term.setCursorPos(2, 3)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #"Type address, then Enter") / 2) + 2, 5)
+    term.write("Type address, then Enter")
+    term.setCursorPos(math.floor((width - #("Address: " .. dialingAddress)) / 2) + 2, 9)
+    term.write("Address: " .. dialingAddress)
+    term.setCursorPos(2, 17)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #"[F1] Back") / 2) + 2, 18)
+    term.write("[F1] Back")
+    term.setBackgroundColor(colors.black)
+end
+
+local function updateAddressBookPage()
+    drawFancyBorders()
+    local width = 49
+    term.setCursorPos(math.floor((width - #"Address Book") / 2) + 2, 2)
+    term.write("Address Book")
+    term.setCursorPos(2, 3)
+    term.write(string.rep("-", width))
+    term.setCursorPos(4, 4)
+    term.write("Search: " .. searchQuery)
+    local addressList = {}
+    for name, data in pairs(addressBook) do
+        if name:lower():find(searchQuery:lower()) or data.code:lower():find(searchQuery:lower()) or (data.tag or ""):lower():find(searchQuery:lower()) then
+            table.insert(addressList, {name = name, code = data.code, isTrusted = data.isTrusted, tag = data.tag or ""})
+        end
+    end
+    for i, addr in ipairs(recentAddresses) do
+        if not addressBook[addr] and addr:lower():find(searchQuery:lower()) then
+            table.insert(addressList, {name = "Recent " .. i, code = addr, isTrusted = false, tag = ""})
+        end
+    end
+    if #addressList == 0 then
+        term.setCursorPos(4, 5)
+        term.write("No addresses in book.")
+    else
+        for i = 1, maxVisibleLines - 1 do
+            local addrIndex = scrollPos + i - 1
+            if addrIndex <= #addressList and addrIndex > 0 then
+                local entry = addressList[addrIndex]
+                if entry then
+                    term.setCursorPos(4, 5 + i)
+                    local trustMarker = entry.isTrusted and "[T]" or "[U]"
+                    local blockMarker = config.BLOCKED_ADDRESSES[entry.code] and "[B]" or ""
+                    local displayName = entry.name or "Unnamed"
+                    local displayCode = entry.code or "NoCode"
+                    local line = (addrIndex == selectedIndex and "> " or "  ") .. displayName .. " " .. trustMarker .. blockMarker .. ": " .. displayCode
+                    if addrIndex == selectedIndex then
+                        term.setBackgroundColor(config.UI_COLORS.buttons or colors.blue)
+                        term.write(line .. " ")
+                        term.setBackgroundColor(colors.black)
+                    else
+                        term.write(line)
+                    end
+                end
+            end
+        end
+    end
+    term.setCursorPos(2, 17)
+    term.write(string.rep("-", width))
+    term.setCursorPos(3, 18)
+    term.write("[A]dd  [S]ave  [T]rust  [B]lock  [C]lear  [D]ial  [Q]uery  [F1] Back")
+    term.setBackgroundColor(colors.black)
+end
+local function updateAddAddressPage()
+    drawFancyBorders()
+    local width = 49
+    term.setCursorPos(math.floor((width - #"Add Address") / 2) + 2, 2)
+    term.write("Add Address")
+    term.setCursorPos(2, 3)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #"Type name, then Enter") / 2) + 2, 5)
+    term.write("Type name, then Enter")
+    term.setCursorPos(math.floor((width - #("Name: " .. addressName)) / 2) + 2, 7)
+    term.write("Name: " .. addressName)
+    term.setCursorPos(math.floor((width - #("Address: " .. addressCode)) / 2) + 2, 9)
+    term.write("Address: " .. addressCode)
+    term.setCursorPos(2, 17)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #"[F1] Back") / 2) + 2, 18)
+    term.write("[F1] Back")
+    term.setBackgroundColor(colors.black)
+end
+
+local function updateDiagnosticsPage()
+    drawFancyBorders()
+    local width = 49
+    term.setCursorPos(math.floor((width - #"Diagnostics") / 2) + 2, 2)
+    term.write("Diagnostics")
+    term.setCursorPos(2, 3)
+    term.write(string.rep("-", width))
+    
+    local fuelPercent = math.floor((fuelGauge / maxFuel) * 100)
+    local barWidth = 40
+    local filledWidth = math.floor((fuelPercent / 100) * barWidth)
+    term.setCursorPos(4, 5)
+    term.write("Fuel Level: " .. fuelPercent .. "%")
+    term.setCursorPos(4, 6)
+    term.setBackgroundColor(colors.gray)
+    term.write("[" .. string.rep(" ", barWidth) .. "]")
+    term.setCursorPos(5, 6)
+    term.setBackgroundColor(fuelPercent <= config.FUEL_WARNING_THRESHOLD and colors.red or colors.lime)
+    term.write(string.rep("=", filledWidth))
+    term.setBackgroundColor(colors.black)
+    
+    for i = 1, maxVisibleLines - 3 do
+        local logIndex = scrollPos + i - 1
+        if logIndex <= #logEntries and logIndex > 0 then
+            term.setCursorPos(4, 7 + i)
+            term.write(logEntries[logIndex]:sub(1, width - 6))
+        end
+    end
+    term.setCursorPos(2, 17)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #"[F1] Back") / 2) + 2, 18)
+    term.write("[F1] Back")
+    term.setBackgroundColor(colors.black)
+end
+
+local function updatePasswordPromptPage()
+    drawFancyBorders()
+    local width = 49
+    term.setCursorPos(math.floor((width - #"Access Granted") / 2) + 2, 2)
+    term.write("Access Granted")
+    term.setCursorPos(2, 3)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #"Change password?") / 2) + 2, 7)
+    term.write("Change password?")
+    term.setCursorPos(math.floor((width - #"[C]hange  [Enter] Proceed") / 2) + 2, 9)
+    term.write("[C]hange  [Enter] Proceed")
+    term.setCursorPos(2, 17)
+    term.write(string.rep("-", width))
+end
+
+local function updatePasswordChangePage()
+    drawFancyBorders()
+    local width = 49
+    term.setCursorPos(math.floor((width - #"Change Password") / 2) + 2, 2)
+    term.write("Change Password")
+    term.setCursorPos(2, 3)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #"Enter new password") / 2) + 2, 5)
+    term.write("Enter new password")
+    term.setCursorPos(math.floor((width - #("New: " .. string.rep("*", #dialingAddress))) / 2) + 2, 9)
+    term.write("New: " .. string.rep("*", #dialingAddress))
+    term.setCursorPos(2, 17)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #"[F1] Back") / 2) + 2, 18)
+    term.write("[F1] Back")
+    term.setBackgroundColor(colors.black)
+end
+
+local function updateNameGatePage()
+    drawFancyBorders()
+    local width = 49
+    term.setCursorPos(math.floor((width - #"Name Gate") / 2) + 2, 2)
+    term.write("Name Gate")
+    term.setCursorPos(2, 3)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #("Current: " .. (config.gateNames[gateName] or gateName or "None"))) / 2) + 2, 5)
+    term.write("Current: " .. (config.gateNames[gateName] or gateName or "None"))
+    term.setCursorPos(math.floor((width - #"Type new name, then Enter") / 2) + 2, 7)
+    term.write("Type new name, then Enter")
+    term.setCursorPos(math.floor((width - #("New Name: " .. dialingAddress)) / 2) + 2, 9)
+    term.write("New Name: " .. dialingAddress)
+    term.setCursorPos(2, 17)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #"[F1] Back") / 2) + 2, 18)
+    term.write("[F1] Back")
+    term.setBackgroundColor(colors.black)
+end
+
+local function updateSearchPage()
+    drawFancyBorders()
+    local width = 49
+    term.setCursorPos(math.floor((width - #"Search Address Book") / 2) + 2, 2)
+    term.write("Search Address Book")
+    term.setCursorPos(2, 3)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #"Type query, then Enter") / 2) + 2, 5)
+    term.write("Type query, then Enter")
+    term.setCursorPos(math.floor((width - #("Query: " .. searchQuery)) / 2) + 2, 9)
+    term.write("Query: " .. searchQuery)
+    term.setCursorPos(2, 17)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #"[F1] Back") / 2) + 2, 18)
+    term.write("[F1] Back")
+    term.setBackgroundColor(colors.black)
+end
+
+local function updateUserPermissionsPage()
+    drawFancyBorders()
+    local width = 49
+    term.setCursorPos(math.floor((width - #"User Permissions") / 2) + 2, 2)
+    term.write("User Permissions")
+    term.setCursorPos(2, 3)
+    term.write(string.rep("-", width))
+    local userList = {}
+    for username, data in pairs(config.users) do
+        table.insert(userList, {name = username, role = data.role})
+    end
+    if #userList == 0 then
+        term.setCursorPos(4, 5)
+        term.write("No users found.")
+    else
+        for i = 1, maxVisibleLines - 1 do
+            local userIndex = scrollPos + i - 1
+            if userIndex <= #userList and userIndex > 0 then
+                local user = userList[userIndex]
+                local line = (userIndex == selectedIndex and "> " or "  ") .. user.name .. " [" .. user.role .. "]"
+                term.setCursorPos(4, 4 + i)
+                if userIndex == selectedIndex then
+                    term.setBackgroundColor(config.UI_COLORS.buttons or colors.blue)
+                    term.write(line .. " ")
+                    term.setBackgroundColor(colors.black)
+                else
+                    term.write(line)
+                end
+            end
+        end
+    end
+    term.setCursorPos(2, 17)
+    term.write(string.rep("-", width))
+    term.setCursorPos(3, 18)
+    term.write("[A]dd  [R]ole  [D]elete  [F1] Back")
+    term.setBackgroundColor(colors.black)
+end
+
+local function updateGateNetworkMap()
+    drawFancyBorders()
+    local width = 49
+    term.setCursorPos(math.floor((width - #"Gate Network Map") / 2) + 2, 2)
+    term.write("Gate Network Map")
+    term.setCursorPos(2, 3)
+    term.write(string.rep("-", width))
+
+    if #stargates == 0 then
+        term.setCursorPos(4, 5)
+        term.write("No gates detected.")
+    else
+        local centerX = 25
+        local centerY = 10
+        term.setCursorPos(centerX, centerY)
+        term.setBackgroundColor(colors.yellow)
+        term.write("O")
+        term.setBackgroundColor(colors.black)
+
+        for i, gate in ipairs(stargates) do
+            local angle = (i - 1) * (2 * math.pi / #stargates)
+            local radius = math.min(7, math.floor(49 / (#stargates + 1)))
+            local x = math.floor(centerX + radius * math.cos(angle))
+            local y = math.floor(centerY + radius * math.sin(angle))
+            term.setCursorPos(x, y)
+            local state = modem.callRemote(gate, "stargateState") or "Disconnected"
+            term.setTextColor(state == "Connected" and colors.green or colors.red)
+            term.write("G")
+            if gate == gateName then
+                term.setTextColor(colors.cyan)
+                term.write("*")
+            end
+        end
+        term.setTextColor(config.UI_COLORS.text or colors.white)
+        term.setCursorPos(4, 15)
+        term.write("O = Local Gate, G = Network Gate, * = Selected")
+    end
+
+    term.setCursorPos(2, 17)
+    term.write(string.rep("-", width))
+    term.setCursorPos(math.floor((width - #"[F1] Back") / 2) + 2, 18)
+    term.write("[F1] Back")
+    term.setBackgroundColor(colors.black)
+end
+
+local function handleInputLoop(updateFunc, handleKey)
+    updateFunc()
+    while true do
+        local event, param = os.pullEvent()
+        if event == "char" or (event == "key" and param ~= keys.f1) then
+            local result = handleKey(event, param)
+            if result ~= nil then return result end
+            updateFunc()
+        elseif event == "key" and param == keys.f1 then
+            return false
+        end
+    end
+end
+
+local function handleDialingInput()
+    dialingAddress = ""
+    return handleInputLoop(updateDialingPage, function(event, param)
+        if event == "char" then
+            dialingAddress = dialingAddress .. param:upper()
+        elseif event == "key" then
+            if param == keys.enter and dialingAddress ~= "" then
+                if dialGate(dialingAddress) then
+                    currentPage = 1
+                    dialingAddress = ""
+                    return true
+                else
+                    term.setCursorPos(4, 11)
+                    term.setTextColor(config.UI_COLORS.warning)
+                    term.write("Invalid address!")
+                    term.setTextColor(config.UI_COLORS.text or colors.white)
+                    sleep(1)
+                end
+            elseif param == keys.backspace and #dialingAddress > 0 then
+                dialingAddress = dialingAddress:sub(1, -2)
+            end
+        end
+    end)
+end
+
+local function handleAddAddressInput()
+    addressName = ""
+    addressCode = ""
+    local enteringName = true
+    return handleInputLoop(updateAddAddressPage, function(event, param)
+        if event == "char" then
+            if enteringName then
+                addressName = addressName .. param
+            else
+                addressCode = addressCode .. param:upper()
+            end
+        elseif event == "key" then
+            if param == keys.enter then
+                if enteringName and addressName ~= "" then
+                    enteringName = false
+                elseif not enteringName and isValidAddress(addressCode) then
+                    addressBook[addressName] = {code = addressCode, isTrusted = false, tag = ""}
+                    currentPage = 4
+                    addressName = ""
+                    addressCode = ""
+                    return true
+                end
+            elseif param == keys.backspace then
+                if enteringName and #addressName > 0 then
+                    addressName = addressName:sub(1, -2)
+                elseif not enteringName and #addressCode > 0 then
+                    addressCode = addressCode:sub(1, -2)
+                end
+            end
+        end
+    end)
+end
+
+local function handleSearchInput()
+    searchQuery = ""
+    return handleInputLoop(updateSearchPage, function(event, param)
+        if event == "char" then
+            searchQuery = searchQuery .. param
+        elseif event == "key" then
+            if param == keys.enter then
+                currentPage = 4
+                return true
+            elseif param == keys.backspace and #searchQuery > 0 then
+                searchQuery = searchQuery:sub(1, -2)
+            end
+        end
+    end)
+end
+
+local function handlePasswordChangeInput()
+    dialingAddress = ""
+    return handleInputLoop(updatePasswordChangePage, function(event, param)
+        if event == "char" then
+            dialingAddress = dialingAddress .. param
+        elseif event == "key" then
+            if param == keys.enter and #dialingAddress > 0 then
+                config.PASSWORD = dialingAddress
+                config.users[currentUser].password = dialingAddress
+                saveConfig()
+                logAction("Password changed for " .. currentUser)
+                dialingAddress = ""
+                currentPage = 1
+                return true
+            elseif param == keys.backspace and #dialingAddress > 0 then
+                dialingAddress = dialingAddress:sub(1, -2)
+            end
+        end
+    end)
+end
+
+local function handleGateSelectionInput()
+    return handleInputLoop(updateGateSelectionPage, function(event, param)
+        if event == "key" then
+            if param == keys.s and #stargates > 0 then
+                gateName = stargates[selectedIndex]
+                logAction("Selected gate: " .. (config.gateNames[gateName] or gateName))
+                syncWithGate()
+                currentPage = 1
+                return true
+            elseif param == keys.up and selectedIndex > 1 then
+                selectedIndex = selectedIndex - 1
+                if selectedIndex < scrollPos then scrollPos = selectedIndex end
+            elseif param == keys.down and selectedIndex < #stargates then
+                selectedIndex = selectedIndex + 1
+                if selectedIndex > scrollPos + maxVisibleLines - 1 then scrollPos = selectedIndex - maxVisibleLines + 1 end
+            end
+        end
+    end)
+end
+
+local function handleNameGateInput()
+    dialingAddress = ""
+    return handleInputLoop(updateNameGatePage, function(event, param)
+        if event == "char" then
+            dialingAddress = dialingAddress .. param
+        elseif event == "key" then
+            if param == keys.enter and #dialingAddress > 0 and gateName then
+                config.gateNames[gateName] = dialingAddress
+                saveConfig()
+                logAction("Named gate " .. gateName .. " as " .. dialingAddress)
+                dialingAddress = ""
+                currentPage = 2
+                return true
+            elseif param == keys.backspace and #dialingAddress > 0 then
+                dialingAddress = dialingAddress:sub(1, -2)
+            end
+        end
+    end)
+end
+
+local function recoverPassword()
+    term.clear()
+    term.setCursorPos(1, 1)
+    term.write("Password Recovery")
+    term.setCursorPos(1, 3)
+    term.write("Enter recovery code: ")
+    local input = read()
+    local storedCode = loadRecoveryCode()
+    if input == storedCode then
+        term.setCursorPos(1, 5)
+        term.write("Enter new password: ")
+        local newPassword = readPassword("")
+        term.setCursorPos(1, 6)
+        term.write("Confirm new password: ")
+        local confirm = readPassword("")
+        if newPassword == confirm then
+            config.users["admin"].password = newPassword
+            saveConfig()
+            logAction("Password recovered and reset for admin")
+            term.setCursorPos(1, 8)
+            term.write("Password reset successfully!")
+            sleep(2)
+            return true
+        else
+            term.setCursorPos(1, 8)
+            term.setTextColor(colors.red)
+            term.write("Passwords don’t match!")
+            term.setTextColor(colors.white)
+            sleep(2)
+            return false
+        end
+    else
+        term.setCursorPos(1, 5)
+        term.setTextColor(colors.red)
+        term.write("Invalid recovery code!")
+        term.setTextColor(colors.white)
+        sleep(2)
+        return false
+    end
+end
+
+local function checkPassword()
+    drawFancyBorders()
+    local width = 49
+    local username = ""
+    local password = ""
+    local enteringUsername = true
+    logAction("Starting password check")
+
+    local function drawLoginPrompt()
+        drawFancyBorders()
+        term.setCursorPos(math.floor((width - #"Login Required") / 2) + 2, 2)
+        term.write("Login Required")
+        term.setCursorPos(2, 3)
+        term.write(string.rep("-", width))
+        term.setCursorPos(math.floor((width - #("Username: " .. username)) / 2) + 2, 8)
+        term.write("Username: " .. username)
+        term.setCursorPos(math.floor((width - #("Password: " .. string.rep("*", #password))) / 2) + 2, 10)
+        term.write("Password: " .. string.rep("*", #password))
+        term.setCursorPos(2, 17)
+        term.write(string.rep("-", width))
+        if config.RECOVERY_ENABLED then
+            term.setCursorPos(math.floor((width - #"[F12] Recover password") / 2) + 2, 12)
+            term.write("[F12] Recover password")
+        end
+    end
+
+    if not fs.exists("dhd_config.txt") then
+        currentUser = initialSignup()
+        drawLoginPrompt()
+    else
+        drawLoginPrompt()
+    end
+
+    while true do
+        local event, param = os.pullEvent()
+        if event == "key" then
+            if param == keys.f12 and config.RECOVERY_ENABLED and not enteringUsername then
+                if recoverPassword() then
+                    return checkPassword()
+                end
+                drawLoginPrompt()
+            elseif param == keys.enter then
+                if enteringUsername and username ~= "" then
+                    enteringUsername = false
+                    logAction("Username entered: " .. username)
+                    drawLoginPrompt()
+                elseif not enteringUsername and password ~= "" then
+                    logAction("Password entered for: " .. username)
+                    if config.users[username] and config.users[username].password == password then
+                        currentUser = username
+                        logAction("Login successful for " .. username)
+                        updatePasswordPromptPage()
+                        while true do
+                            local e, p = os.pullEvent("key")
+                            if p == keys.enter then
+                                return true
+                            elseif p == keys.c then
+                                if handlePasswordChangeInput() then
+                                    return true
+                                end
+                                updatePasswordPromptPage()
+                            elseif p == keys.f1 then
+                                return true
+                            end
+                        end
+                    else
+                        term.setCursorPos(math.floor((width - #"Wrong credentials!") / 2) + 2, 14)
+                        term.setTextColor(config.UI_COLORS.warning)
+                        term.write("Wrong credentials!")
+                        term.setTextColor(config.UI_COLORS.text or colors.white)
+                        logAction("Login failed for " .. username)
+                        sleep(1)
+                        drawLoginPrompt()
+                    end
+                end
+            elseif param == keys.backspace then
+                if enteringUsername and #username > 0 then
+                    username = username:sub(1, -2)
+                elseif not enteringUsername and #password > 0 then
+                    password = password:sub(1, -2)
+                end
+                drawLoginPrompt()
+            elseif param == keys.f1 then
+                logAction("Login aborted with F1")
+                return false
+            end
+        elseif event == "char" then
+            if enteringUsername then
+                username = username .. param
+                drawLoginPrompt()
+            else
+                password = password .. param
+                drawLoginPrompt()
+            end
+        end
+    end
+end
+
+local function handleUserPermissionsInput()
+    local newUsername = ""
+    local newPassword = ""
+    local newRole = "user"
+    local enteringUsername = true
+    local enteringPassword = false
+    local addingUser = false
+
+    local function updateAddUserPage()
+        drawFancyBorders()
+        local width = 49
+        term.setCursorPos(math.floor((width - #"Add User") / 2) + 2, 2)
+        term.write("Add User")
+        term.setCursorPos(2, 3)
+        term.write(string.rep("-", width))
+        term.setCursorPos(4, 5)
+        term.write("Username: " .. newUsername)
+        term.setCursorPos(4, 7)
+        term.write("Password: " .. string.rep("*", #newPassword))
+        term.setCursorPos(4, 9)
+        term.write("Role: " .. newRole)
+        term.setCursorPos(2, 17)
+        term.write(string.rep("-", width))
+        term.setCursorPos(math.floor((width - #"[F1] Back") / 2) + 2, 18)
+        term.write("[F1] Back")
+    end
+
+    return handleInputLoop(updateUserPermissionsPage, function(event, param)
+        if event == "key" then
+            if param == keys.u and currentPage == 2 then
+                currentPage = 10
+                scrollPos = 1
+                selectedIndex = 1
+                updateUserPermissionsPage()
+            elseif param == keys.a and currentPage == 10 then
+                addingUser = true
+                return handleInputLoop(updateAddUserPage, function(e, p)
+                    if e == "char" then
+                        if enteringUsername then
+                            newUsername = newUsername .. p
+                        elseif enteringPassword then
+                            newPassword = newPassword .. p
+                        end
+                    elseif e == "key" then
+                        if p == keys.enter then
+                            if enteringUsername and newUsername ~= "" then
+                                enteringUsername = false
+                                enteringPassword = true
+                            elseif enteringPassword and newPassword ~= "" then
+                                config.users[newUsername] = {password = newPassword, role = newRole}
+                                saveConfig()
+                                logAction("Added user: " .. newUsername .. " with role: " .. newRole)
+                                newUsername = ""
+                                newPassword = ""
+                                enteringUsername = true
+                                enteringPassword = false
+                                addingUser = false
+                                currentPage = 10
+                                return true
+                            end
+                        elseif p == keys.r and not addingUser then
+                            local userList = {}
+                            for username in pairs(config.users) do
+                                table.insert(userList, username)
+                            end
+                            if #userList > 0 then
+                                local user = userList[selectedIndex]
+                                config.users[user].role = (config.users[user].role == "user") and "admin" or "user"
+                                saveConfig()
+                                logAction("Changed role for " .. user .. " to " .. config.users[user].role)
+                            end
+                        elseif p == keys.d and not addingUser then
+                            local userList = {}
+                            for username in pairs(config.users) do
+                                table.insert(userList, username)
+                            end
+                            if #userList > 0 and userList[selectedIndex] ~= "admin" then
+                                local user = userList[selectedIndex]
+                                config.users[user] = nil
+                                saveConfig()
+                                logAction("Deleted user: " .. user)
+                            end
+                        elseif p == keys.up and selectedIndex > 1 and not addingUser then
+                            selectedIndex = selectedIndex - 1
+                            if selectedIndex < scrollPos then scrollPos = selectedIndex end
+                        elseif p == keys.down then
+                            if not addingUser then
+                                local userList = {}
+                                for username in pairs(config.users) do
+                                    table.insert(userList, username)
+                                end
+                                if selectedIndex < #userList then
+                                    selectedIndex = selectedIndex + 1
+                                    if selectedIndex > scrollPos + maxVisibleLines - 2 then
+                                        scrollPos = selectedIndex - maxVisibleLines + 2
+                                    end
+                                end
+                            end
+                        elseif p == keys.backspace and addingUser then
+                            if enteringUsername and #newUsername > 0 then
+                                newUsername = newUsername:sub(1, -2)
+                            elseif enteringPassword and #newPassword > 0 then
+                                newPassword = newPassword:sub(1, -2)
+                            end
+                        end
+                    end
+                    return nil
+                end)
+            elseif param == keys.r and not addingUser then
+                local userList = {}
+                for username in pairs(config.users) do
+                    table.insert(userList, username)
+                end
+                if #userList > 0 then
+                    local user = userList[selectedIndex]
+                    config.users[user].role = (config.users[user].role == "user") and "admin" or "user"
+                    saveConfig()
+                    logAction("Changed role for " .. user .. " to " .. config.users[user].role)
+                end
+            elseif param == keys.d and not addingUser then
+                local userList = {}
+                for username in pairs(config.users) do
+                    table.insert(userList, username)
+                end
+                if #userList > 0 and userList[selectedIndex] ~= "admin" then
+                    local user = userList[selectedIndex]
+                    config.users[user] = nil
+                    saveConfig()
+                    logAction("Deleted user: " .. user)
+                end
+            elseif param == keys.up and selectedIndex > 1 and not addingUser then
+                selectedIndex = selectedIndex - 1
+                if selectedIndex < scrollPos then scrollPos = selectedIndex end
+            elseif param == keys.down and not addingUser then
+                local userList = {}
+                for username in pairs(config.users) do
+                    table.insert(userList, username)
+                end
+                if selectedIndex < #userList then
+                    selectedIndex = selectedIndex + 1
+                    if selectedIndex > scrollPos + maxVisibleLines - 2 then
+                        scrollPos = selectedIndex - maxVisibleLines + 2
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local function mainLoop()
+    local lastSyncTime = os.clock()
+    while true do
+        if currentPage == 1 then
+            if os.clock() - lastSyncTime >= (config.SYNC_INTERVAL or 0.5) then
+                syncWithGate()
+                updateMainPage()
+                lastSyncTime = os.clock()
+            end
+        elseif currentPage == 2 then
+            updateSystemFunctionsPage()
+        elseif currentPage == 4 then
+            updateAddressBookPage()
+        elseif currentPage == 6 then
+            updateGateSelectionPage()
+        elseif currentPage == 8 then
+            updateDiagnosticsPage()
+        elseif currentPage == 10 then
+            updateUserPermissionsPage()
+        elseif currentPage == 11 then
+            updateGateNetworkMap()
+        end
+
+        local event, param = os.pullEvent()
+        if event == "key" then
+            local key = param
+            if currentPage == 1 then
+                if key == keys.m then
+                    currentPage = 2
+                    scrollPos = 1
+                    updateSystemFunctionsPage()
+                elseif key == keys.t then
+                    toggleIris()
+                    updateMainPage()
+                elseif key == keys.e then
+                    emergencyShutdown()
+                    updateMainPage()
+                elseif key == keys.f1 then
+                    updateMainPage()
+                end
+            elseif currentPage == 2 then
+                if key == keys.f1 then
+                    currentPage = 1
+                    updateMainPage()
+                elseif key == keys.t then
+                    toggleIris()
+                    updateSystemFunctionsPage()
+                elseif key == keys.d then
+                    disconnectGate()
+                    updateSystemFunctionsPage()
+                elseif key == keys.g then
+                    currentPage = 3
+                    if handleDialingInput() then
+                        currentPage = 1
+                        updateMainPage()
+                    else
+                        currentPage = 2
+                        updateSystemFunctionsPage()
+                    end
+                elseif key == keys.a then
+                    currentPage = 4
+                    scrollPos = 1
+                    selectedIndex = 1
+                    updateAddressBookPage()
+                elseif key == keys.s then
+                    currentPage = 6
+                    scrollPos = 1
+                    selectedIndex = 1
+                    if handleGateSelectionInput() then
+                        currentPage = 1
+                        updateMainPage()
+                    else
+                        currentPage = 2
+                        updateSystemFunctionsPage()
+                    end
+                elseif key == keys.n then
+                    currentPage = 7
+                    if handleNameGateInput() then
+                        currentPage = 2
+                        updateSystemFunctionsPage()
+                    else
+                        currentPage = 2
+                        updateSystemFunctionsPage()
+                    end
+                elseif key == keys.i then
+                    currentPage = 8
+                    scrollPos = 1
+                    updateDiagnosticsPage()
+                elseif key == keys.l then
+                    toggleLockdown()
+                    updateSystemFunctionsPage()
+                elseif key == keys.u then
+                    currentPage = 10
+                    scrollPos = 1
+                    selectedIndex = 1
+                    if handleUserPermissionsInput() then
+                        currentPage = 2
+                        updateSystemFunctionsPage()
+                    else
+                        currentPage = 2
+                        updateSystemFunctionsPage()
+                    end
+                elseif key == keys.m then
+                    currentPage = 11
+                    updateGateNetworkMap()
+                elseif key == keys.up and scrollPos > 1 then
+                    scrollPos = scrollPos - 1
+                    updateSystemFunctionsPage()
+                elseif key == keys.down and scrollPos + maxVisibleLines - 1 < 13 then
+                    scrollPos = scrollPos + 1
+                    updateSystemFunctionsPage()
+                end
+            elseif currentPage == 4 then
+                local addressList = {}
+                for name, data in pairs(addressBook) do
+                    if name:lower():find(searchQuery:lower()) or data.code:lower():find(searchQuery:lower()) or (data.tag or ""):lower():find(searchQuery:lower()) then
+                        table.insert(addressList, {name = name, code = data.code, isTrusted = data.isTrusted, tag = data.tag or ""})
+                    end
+                end
+                for i, addr in ipairs(recentAddresses) do
+                    if not addressBook[addr] and addr:lower():find(searchQuery:lower()) then
+                        table.insert(addressList, {name = "Recent " .. i, code = addr, isTrusted = false, tag = ""})
+                    end
+                end
+                if key == keys.f1 then
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                elseif key == keys.a then
+                    currentPage = 5
+                    if handleAddAddressInput() then
+                        currentPage = 4
+                        updateAddressBookPage()
+                    else
+                        currentPage = 4
+                        updateAddressBookPage()
+                    end
+                elseif key == keys.s then
+                    saveAddressBook()
+                    logAction("Address book saved")
+                    updateAddressBookPage()
+                elseif key == keys.t and #addressList > 0 then
+                    local entry = addressList[selectedIndex]
+                    if entry then
+                        addressBook[entry.name] = addressBook[entry.name] or {}
+                        addressBook[entry.name].isTrusted = not (addressBook[entry.name].isTrusted or false)
+                        logAction("Toggled trust for " .. entry.name .. " to " .. (addressBook[entry.name].isTrusted and "trusted" or "untrusted"))
+                    end
+                    updateAddressBookPage()
+                elseif key == keys.b and #addressList > 0 then
+                    local entry = addressList[selectedIndex]
+                    if entry then
+                        if config.BLOCKED_ADDRESSES[entry.code] then
+                            config.BLOCKED_ADDRESSES[entry.code] = nil
+                            logAction("Unblocked address: " .. entry.code)
+                        else
+                            config.BLOCKED_ADDRESSES[entry.code] = true
+                            logAction("Blocked address: " .. entry.code)
+                        end
+                        saveConfig()
+                    end
+                    updateAddressBookPage()
+                elseif key == keys.c then
+                    addressBook = {}
+                    scrollPos = 1
+                    selectedIndex = 1
+                    logAction("Address book cleared")
+                    updateAddressBookPage()
+                elseif key == keys.d and #addressList > 0 then
+                    local entry = addressList[selectedIndex]
+                    if entry then
+                        dialGate(entry.code)
+                    end
+                    currentPage = 1
+                    updateMainPage()
+                elseif key == keys.q then
+                    currentPage = 9
+                    if handleSearchInput() then
+                        currentPage = 4
+                        updateAddressBookPage()
+                    else
+                        currentPage = 4
+                        updateAddressBookPage()
+                    end
+                elseif key == keys.up and selectedIndex > 1 then
+                    selectedIndex = selectedIndex - 1
+                    if selectedIndex < scrollPos then scrollPos = selectedIndex end
+                    updateAddressBookPage()
+                elseif key == keys.down and selectedIndex < #addressList then
+                    selectedIndex = selectedIndex + 1
+                    if selectedIndex > scrollPos + maxVisibleLines - 2 then scrollPos = selectedIndex - maxVisibleLines + 2 end
+                    updateAddressBookPage()
+                end
+            elseif currentPage == 6 then
+                if key == keys.f1 then
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                elseif key == keys.s and #stargates > 0 then
+                    gateName = stargates[selectedIndex]
+                    logAction("Selected gate: " .. (config.gateNames[gateName] or gateName))
+                    syncWithGate()
+                    currentPage = 1
+                    updateMainPage()
+                elseif key == keys.up and selectedIndex > 1 then
+                    selectedIndex = selectedIndex - 1
+                    if selectedIndex < scrollPos then scrollPos = selectedIndex end
+                    updateGateSelectionPage()
+                elseif key == keys.down and selectedIndex < #stargates then
+                    selectedIndex = selectedIndex + 1
+                    if selectedIndex > scrollPos + maxVisibleLines - 1 then scrollPos = selectedIndex - maxVisibleLines + 1 end
+                    updateGateSelectionPage()
+                end
+            elseif currentPage == 8 then
+                if key == keys.f1 then
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                elseif key == keys.up and scrollPos > 1 then
+                    scrollPos = scrollPos - 1
+                    updateDiagnosticsPage()
+                elseif key == keys.down and scrollPos + maxVisibleLines - 3 < #logEntries then
+                    scrollPos = scrollPos + 1
+                    updateDiagnosticsPage()
+                end
+            elseif currentPage == 10 then
+                if key == keys.f1 then
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                elseif key == keys.a then
+                    currentPage = 10
+                    if handleUserPermissionsInput() then
+                        currentPage = 10
+                        updateUserPermissionsPage()
+                    end
+                elseif key == keys.r then
+                    local userList = {}
+                    for username in pairs(config.users) do
+                        table.insert(userList, username)
+                    end
+                    if #userList > 0 then
+                        local user = userList[selectedIndex]
+                        config.users[user].role = (config.users[user].role == "user") and "admin" or "user"
+                        saveConfig()
+                        logAction("Changed role for " .. user .. " to " .. config.users[user].role)
+                    end
+                    updateUserPermissionsPage()
+                elseif key == keys.d then
+                    local userList = {}
+                    for username in pairs(config.users) do
+                        table.insert(userList, username)
+                    end
+                    if #userList > 0 and userList[selectedIndex] ~= "admin" then
+                        local user = userList[selectedIndex]
+                        config.users[user] = nil
+                        saveConfig()
+                        logAction("Deleted user: " .. user)
+                    end
+                    updateUserPermissionsPage()
+                elseif key == keys.up and selectedIndex > 1 then
+                    selectedIndex = selectedIndex - 1
+                    if selectedIndex < scrollPos then scrollPos = selectedIndex end
+                    updateUserPermissionsPage()
+                elseif key == keys.down then
+                    local userList = {}
+                    for username in pairs(config.users) do
+                        table.insert(userList, username)
+                    end
+                    if selectedIndex < #userList then
+                        selectedIndex = selectedIndex + 1
+                        if selectedIndex > scrollPos + maxVisibleLines - 2 then scrollPos = selectedIndex - maxVisibleLines + 2 end
+                    end
+                    updateUserPermissionsPage()
+                end
+            elseif currentPage == 11 then
+                if key == keys.f1 then
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                end
+            end
+        end
+    end
+end
+
+print("Starting ccDHD v2...")
+loadConfig()
+print("Config loaded, proceeding to login")
+logAction("Starting login")
+if not checkPassword() then
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("Access Denied")
+    logAction("Access denied")
+    return
+end
+print("Login successful, finding gates")
+logAction("Login completed, initializing gates")
+if not findGates() then 
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("No Stargates found on network.")
+    logAction("No Stargates found")
+    sleep(2)
+end
+loadAddressBook()
+maxVisibleLines = config.MAX_VISIBLE_LINES or 13
+
+term.clear()
+term.setCursorPos(1, 1)
+term.write("Initializing Stargate...")
+syncWithGate()
+term.setCursorPos(1, 2)
+term.write("Connected to: " .. (config.gateNames[gateName] or gateName or "None") .. " at: " .. localAddress)
+sleep(1)
+
+updateMainPage()
+if config.AUTO_DIAL_ADDRESS and isValidAddress(config.AUTO_DIAL_ADDRESS) then
+    dialGate(config.AUTO_DIAL_ADDRESS)
+elseif config.PRE_DIAL_ADDRESS then
+    preDialAddress()
+end
+mainLoop()
