@@ -1,0 +1,130 @@
+function updateDiagnosticsPage()
+    local rawFuel = callGateMethod(gateName, "energy") or fuelGauge or 0
+    local fuelDisplay = isVersion1122 and string.format("%.2f", rawFuel) .. "/" .. maxFuel .. " RF" or string.format("%.2f", rawFuel) .. "/" .. maxFuel .. " SU (" .. math.floor((rawFuel / maxFuel) * 100) .. "%)"
+    local activeGates = 0
+    for _, gate in ipairs(stargates) do
+        if callGateMethod(gate, "state") == "Connected" then
+            activeGates = activeGates + 1
+        end
+    end
+    local blockedCount = 0
+    for _ in pairs(config.BLOCKED_ADDRESSES) do blockedCount = blockedCount + 1 end
+    local elements = {
+        {text = string.rep("-", 49), y = 3},
+        {text = "Gate: " .. (config.gateNames[gateName] or gateName or "None"), y = 4},
+        {text = "State: " .. (gateStatus or "Unknown"), y = 5},
+        {text = "Address: " .. (localAddress or "Unknown"), y = 6},
+        {text = "Connected To: " .. (dialAddress ~= "none" and dialAddress or incomingAddress ~= "none" and incomingAddress or "None"), y = 7},
+        {text = "Fuel: " .. fuelDisplay, y = 8},
+        {text = "Raw Fuel: " .. string.format("%.2f", rawFuel) .. (isVersion1122 and " RF" or " SU"), y = 9},
+        {text = "Network Gates: " .. #stargates, y = 10},
+        {text = "Active Gates: " .. activeGates, y = 11},
+        {text = "Iris: " .. (irisState and "Open" or "Closed"), y = 12},
+        {text = "Lockdown: " .. (config.LOCKDOWN_MODE and "Active" or "Off"), y = 13},
+        {text = "Alarm: " .. (config.ALARM_ENABLED and "On" or "Off"), y = 14},
+        {text = "Blocked Addrs: " .. blockedCount, y = 15}
+    }
+    if #stargates <= 10 then
+        for i = 1, 3 do
+            local logIndex = #logEntries - 2 + i - scrollPos
+            if logIndex <= #logEntries and logIndex > 0 then
+                table.insert(elements, {text = logEntries[logIndex]:sub(1, 43), y = 15 + i})
+            end
+        end
+    end
+    table.insert(elements, {text = string.rep("-", 49), y = 17})
+    table.insert(elements, {text = "[F1] Back", y = 18, centered = true})
+    drawPage("Diagnostics", elements)
+end
+
+function updateCheckFuelPage()
+    local rawFuel = callGateMethod(gateName, "energy") or fuelGauge or 0
+    local fuelPercent = isVersion1122 and math.floor((rawFuel / maxFuel) * 100) or (rawFuel >= 50000 and 100 or math.floor((rawFuel / maxFuel) * 100))
+    local dialCapacity = math.floor(rawFuel / (isVersion1122 and 10000 or 10000))
+    drawPage("Fuel Status", {
+        {text = string.rep("-", 49), y = 3},
+        {text = "Gate: " .. (config.gateNames[gateName] or gateName or "None"), y = 5},
+        {text = "Current: " .. string.format("%.2f", rawFuel) .. (isVersion1122 and " RF" or " SU"), y = 7},
+        {text = "Max: " .. maxFuel .. (isVersion1122 and " RF" or " SU"), y = 8},
+        {text = "Percent: " .. fuelPercent .. "%", y = 9},
+        {text = "Est. Dials: " .. dialCapacity, y = 11},
+        {text = string.rep("-", 49), y = 17},
+        {text = "[F1] Back", y = 18, centered = true}
+    })
+end
+
+function updateGateHistoryPage()
+    local history = recentAddresses or {}
+    local elements = {
+        {text = string.rep("-", 49), y = 3}
+    }
+    if #history == 0 then
+        table.insert(elements, {text = "No recent activity.", y = 5})
+    else
+        for i = 1, 10 do
+            local idx = scrollPos + i - 1
+            if idx <= #history and idx > 0 then
+                table.insert(elements, {text = history[idx], y = 4 + i})
+            end
+        end
+    end
+    table.insert(elements, {text = string.rep("-", 49), y = 17})
+    table.insert(elements, {text = "[F1] Back", y = 18, centered = true})
+    drawPage("Gate History", elements)
+end
+
+function updateGateNetworkMap()
+    local elements = {
+        {text = string.rep("-", 49), y = 3}
+    }
+    if #stargates == 0 then
+        table.insert(elements, {text = "No gates detected.", y = 5})
+    elseif #stargates > 10 then
+        for i = 1, math.min(10, #stargates) do
+            local gate = stargates[i]
+            local state = callGateMethod(gate, "state") or "Disconnected"
+            local line = (gate == gateName and "* " or "  ") .. (config.gateNames[gate] or gate) .. ": " .. (state == "Connected" and "Active" or "Idle")
+            table.insert(elements, {text = line, y = 4 + i})
+        end
+        table.insert(elements, {text = "Showing " .. math.min(10, #stargates) .. " of " .. #stargates .. " gates", y = 15})
+    else
+        local centerX = 25
+        local centerY = 10
+        table.insert(elements, {text = "O", y = centerY, x = centerX, bgColor = colors.yellow})
+        for i, gate in ipairs(stargates) do
+            local angle = (i - 1) * (2 * math.pi / #stargates)
+            local radius = math.min(7, math.floor(49 / (#stargates + 1)))
+            local x = math.floor(centerX + radius * math.cos(angle))
+            local y = math.floor(centerY + radius * math.sin(angle))
+            local state = callGateMethod(gate, "state") or "Disconnected"
+            table.insert(elements, {text = "G", y = y, x = x, color = state == "Connected" and colors.green or colors.red})
+            if gate == gateName then
+                table.insert(elements, {text = "*", y = y, x = x + 1, color = colors.cyan})
+            end
+        end
+        table.insert(elements, {text = "O = Local Gate, G = Network Gate, * = Selected", y = 15})
+    end
+    table.insert(elements, {text = string.rep("-", 49), y = 17})
+    table.insert(elements, {text = "[F1] Back", y = 18, centered = true})
+    drawPage("Gate Network Map", elements)
+end
+
+function updateSendMessagePage()
+    drawPage("Send Message", {
+        {text = string.rep("-", 49), y = 3},
+        {text = "Type message, then Enter", y = 5, centered = true},
+        {text = "Message: " .. dialingAddress, y = 9, centered = true},
+        {text = string.rep("-", 49), y = 17},
+        {text = "[F1] Back", y = 18, centered = true}
+    })
+end
+
+function updateSetAlarmPage()
+    drawPage("Set Alarm", {
+        {text = string.rep("-", 49), y = 3},
+        {text = "Alarm: " .. (config.ALARM_ENABLED and "On" or "Off"), y = 5},
+        {text = "[T]oggle Alarm for untrusted incoming", y = 7},
+        {text = string.rep("-", 49), y = 17},
+        {text = "[F1] Back", y = 18, centered = true}
+    })
+end

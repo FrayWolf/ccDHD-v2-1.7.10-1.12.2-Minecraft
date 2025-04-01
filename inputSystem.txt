@@ -1,0 +1,35 @@
+function handleSendMessageInput()
+    return handleInputLoop(updateSendMessagePage, 12)
+end
+
+function handleAutoDialInput()
+    handleAutoDialInput()
+end
+
+function handleSignalTestInput()
+    handleSignalTestInput()
+end
+
+function handleSetAlarmInput()
+    return handleInputLoop(updateSetAlarmPage, 15)
+end
+
+function handleGateScanInput()
+    handleGateScanInput()
+end
+
+function handlePowerBoostInput()
+    handlePowerBoostInput()
+end
+
+function handleAppearanceSettingsInput()
+    return handleInputLoop(updateAppearanceSettingsPage, 16)
+end
+
+function handleGroupGates()
+    handleGroupGates()
+end
+
+function handleScheduleDial()
+    handleScheduleDial()
+end

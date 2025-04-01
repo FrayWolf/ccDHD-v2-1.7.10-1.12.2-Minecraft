@@ -1,0 +1,82 @@
+function updateSystemFunctionsPage()
+    currentFuncPage = math.max(1, math.min(5, currentFuncPage))
+    local funcs = {
+        [1] = {
+            {name = "Toggle Iris", key = "T"},
+            {name = "Disconnect Gate", key = "D"},
+            {name = "Dial Gate", key = "G"},
+            {name = "Address Book", key = "A"},
+            {name = "Select Gate", key = "S"},
+            {name = "Name Gate", key = "E"},
+            {name = "Send Message", key = "F"},
+            {name = "Gate Network Map", key = "M"},
+            {name = "Auto-Dial", key = "O"},
+            {name = "Signal Test", key = "P"}
+        },
+        [2] = {
+            {name = "Toggle Lockdown", key = "L"},
+            {name = "User Permissions", key = "U"},
+            {name = "Check Fuel", key = "C"},
+            {name = "Diagnostics", key = "I"},
+            {name = "Reset Config", key = "R"},
+            {name = "Gate History", key = "H"},
+            {name = "Gate Scan", key = "K"},
+            {name = "Power Boost", key = "B"},
+            {name = "Appearance Settings", key = "A"}
+        },
+        [3] = {
+            {name = "Group Gates", key = "G"},
+            {name = "Schedule Dial", key = "S"},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""}
+        },
+        [4] = {
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""}
+        },
+        [5] = {
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""},
+            {name = "Reserved for Future Use", key = ""}
+        }
+    }
+    local elements = {
+        {text = string.rep("-", 49), y = 3}
+    }
+    local pageFuncs = funcs[currentFuncPage]
+    for i = 1, 10 do
+        if pageFuncs[i] then
+            table.insert(elements, {text = pageFuncs[i].name, y = 4 + i})
+            if pageFuncs[i].key ~= "" then
+                table.insert(elements, {text = "[" .. pageFuncs[i].key .. "]", y = 4 + i, x = 44, color = colors.green})
+            end
+        end
+    end
+    table.insert(elements, {text = string.rep("-", 49), y = 17})
+    local navText = currentFuncPage == 1 and "[N]ext  [F1] Back" or
+                    currentFuncPage == 5 and "[P]rev  [F1] Back" or
+                    "[P]rev  [N]ext  [F1] Back"
+    table.insert(elements, {text = navText, y = 18, centered = true})
+    drawPage("System Functions (" .. currentFuncPage .. "/5)", elements)
+end

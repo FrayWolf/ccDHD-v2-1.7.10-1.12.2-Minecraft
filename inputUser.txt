@@ -1,0 +1,150 @@
+function handlePasswordChangeInput()
+    dialingAddress = ""
+    registerInput(17, keys.enter, function(event, param)
+        if #dialingAddress > 0 then
+            config.users[currentUser].password = hashPassword(dialingAddress)
+            if saveConfig() then
+                logAction("Password changed for " .. currentUser)
+                dialingAddress = ""
+                currentPage = 1
+                return true
+            else
+                term.setCursorPos(4, 9)
+                term.setTextColor(config.UI_COLORS.warning)
+                term.write("Save failed! Check logs.")
+                term.setTextColor(config.UI_COLORS.text or colors.white)
+                sleep(1)
+            end
+        end
+    end)
+    registerInput(17, keys.backspace, function(event, param)
+        if #dialingAddress > 0 then
+            dialingAddress = dialingAddress:sub(1, -2)
+        end
+    end)
+    return handleInputLoop(updatePasswordChangePage, 17)
+end
+
+function handleUserPermissionsInput()
+    local newUsername = ""
+    local newPassword = ""
+    local newRole = "user"
+    local enteringUsername = true
+    local enteringPassword = false
+    local addingUser = false
+
+    local function updateAddUserPage()
+        drawPage("Add User", {
+            {text = string.rep("-", 49), y = 3},
+            {text = "Username: " .. newUsername, y = 5},
+            {text = "Password: " .. string.rep("*", #newPassword), y = 7},
+            {text = "Role: " .. newRole, y = 9},
+            {text = string.rep("-", 49), y = 17},
+            {text = "[F1] Back", y = 18, centered = true}
+        })
+    end
+
+    registerInput(10, keys.a, function(event, param)
+        if not addingUser then
+            addingUser = true
+            return handleInputLoop(updateAddUserPage, 18)
+        end
+    end)
+    registerInput(10, keys.r, function(event, param)
+        local userList = getUserList()
+        if #userList > 0 then
+            local user = userList[selectedIndex]
+            config.users[user].role = (config.users[user].role == "user") and "admin" or "user"
+            if saveConfig() then
+                logAction("Changed role for " .. user .. " to " .. config.users[user].role)
+            else
+                term.setCursorPos(4, 15)
+                term.setTextColor(config.UI_COLORS.warning)
+                term.write("Save failed! Check logs.")
+                term.setTextColor(config.UI_COLORS.text or colors.white)
+                sleep(1)
+            end
+        end
+    end)
+    registerInput(10, keys.d, function(event, param)
+        local userList = getUserList()
+        if #userList > 0 and userList[selectedIndex] ~= "admin" then
+            local user = userList[selectedIndex]
+            config.users[user] = nil
+            if saveConfig() then
+                logAction("Deleted user: " .. user)
+            else
+                term.setCursorPos(4, 15)
+                term.setTextColor(config.UI_COLORS.warning)
+                term.write("Save failed! Check logs.")
+                term.setTextColor(config.UI_COLORS.text or colors.white)
+                sleep(1)
+            end
+        end
+    end)
+    registerInput(10, keys.up, function(event, param)
+        if selectedIndex > 1 and not addingUser then
+            selectedIndex = selectedIndex - 1
+            if selectedIndex < scrollPos then scrollPos = selectedIndex end
+        end
+    end)
+    registerInput(10, keys.down, function(event, param)
+        if not addingUser then
+            local userList = getUserList()
+            if selectedIndex < #userList then
+                selectedIndex = selectedIndex + 1
+                if selectedIndex > scrollPos + maxVisibleLines - 2 then
+                    scrollPos = selectedIndex - maxVisibleLines + 2
+                end
+            end
+        end
+    end)
+    registerInput(18, keys.enter, function(event, param)
+        if enteringUsername and newUsername ~= "" then
+            if config.users[newUsername] then
+                term.setCursorPos(4, 11)
+                term.setTextColor(config.UI_COLORS.warning)
+                term.write("Username taken!")
+                term.setTextColor(config.UI_COLORS.text or colors.white)
+                sleep(1)
+            else
+                enteringUsername = false
+                enteringPassword = true
+            end
+        elseif enteringPassword and newPassword ~= "" then
+            config.users[newUsername] = {password = hashPassword(newPassword), role = newRole}
+            if saveConfig() then
+                logAction("Added user: " .. newUsername .. " with role: " .. newRole)
+                newUsername = ""
+                newPassword = ""
+                enteringUsername = true
+                enteringPassword = false
+                addingUser = false
+                currentPage = 10
+                return true
+            else
+                term.setCursorPos(4, 11)
+                term.setTextColor(config.UI_COLORS.warning)
+                term.write("Save failed! Check logs.")
+                term.setTextColor(config.UI_COLORS.text or colors.white)
+                sleep(1)
+            end
+        end
+    end)
+    registerInput(18, keys.backspace, function(event, param)
+        if enteringUsername and #newUsername > 0 then
+            newUsername = newUsername:sub(1, -2)
+        elseif enteringPassword and #newPassword > 0 then
+            newPassword = newPassword:sub(1, -2)
+        end
+    end)
+    return handleInputLoop(updateUserPermissionsPage, 10)
+end
+
+function getUserList()
+    local userList = {}
+    for username in pairs(config.users) do
+        table.insert(userList, username)
+    end
+    return userList
+end

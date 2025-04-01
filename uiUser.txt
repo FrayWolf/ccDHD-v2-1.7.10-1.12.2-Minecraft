@@ -1,0 +1,68 @@
+function updateUserPermissionsPage()
+    local userList = {}
+    for username, data in pairs(config.users) do
+        table.insert(userList, {name = username, role = data.role})
+    end
+    local elements = {
+        {text = string.rep("-", 49), y = 3}
+    }
+    if #userList == 0 then
+        table.insert(elements, {text = "No users found.", y = 5})
+    else
+        for i = 1, maxVisibleLines - 1 do
+            local userIndex = scrollPos + i - 1
+            if userIndex <= #userList and userIndex > 0 then
+                local user = userList[userIndex]
+                local line = (userIndex == selectedIndex and "> " or "  ") .. user.name .. " [" .. user.role .. "]"
+                table.insert(elements, {text = line, y = 4 + i, bgColor = userIndex == selectedIndex and config.UI_COLORS.buttons})
+            end
+        end
+    end
+    table.insert(elements, {text = string.rep("-", 49), y = 17})
+    table.insert(elements, {text = "[A]dd  [R]ole  [D]elete  [F1] Back", y = 18, x = 3})
+    drawPage("User Permissions", elements)
+end
+
+function updatePasswordPromptPage()
+    drawPage("Access Granted", {
+        {text = string.rep("-", 49), y = 3},
+        {text = "Change password?", y = 7, centered = true},
+        {text = "[C]hange  [Enter] Proceed", y = 9, centered = true},
+        {text = string.rep("-", 49), y = 17}
+    })
+end
+
+function updatePasswordChangePage()
+    drawPage("Change Password", {
+        {text = string.rep("-", 49), y = 3},
+        {text = "Enter new password", y = 5, centered = true},
+        {text = "New: " .. string.rep("*", #dialingAddress), y = 9, centered = true},
+        {text = string.rep("-", 49), y = 17},
+        {text = "[F1] Back", y = 18, centered = true}
+    })
+end
+
+function updateAppearanceSettingsPage()
+    local colorNames = {
+        [colors.white] = "White", [colors.orange] = "Orange", [colors.magenta] = "Magenta",
+        [colors.lightBlue] = "LightBlue", [colors.yellow] = "Yellow", [colors.lime] = "Lime",
+        [colors.pink] = "Pink", [colors.gray] = "Gray", [colors.lightGray] = "LightGray",
+        [colors.cyan] = "Cyan", [colors.purple] = "Purple", [colors.blue] = "Blue",
+        [colors.brown] = "Brown", [colors.green] = "Green", [colors.red] = "Red",
+        [colors.black] = "Black"
+    }
+    drawPage("Appearance Settings", {
+        {text = string.rep("-", 49), y = 3},
+        {text = "Borders [B]: ", y = 5},
+        {text = colorNames[config.UI_COLORS.borders], y = 5, x = 17, color = config.UI_COLORS.borders},
+        {text = "Text [T]: ", y = 7},
+        {text = colorNames[config.UI_COLORS.text], y = 7, x = 14, color = config.UI_COLORS.text},
+        {text = "Buttons [U]: ", y = 9},
+        {text = colorNames[config.UI_COLORS.buttons], y = 9, x = 17, color = config.UI_COLORS.buttons},
+        {text = "Warning [W]: ", y = 11},
+        {text = colorNames[config.UI_COLORS.warning], y = 11, x = 17, color = config.UI_COLORS.warning},
+        {text = "Sync [S]: " .. config.SYNC_INTERVAL .. "s", y = 13},
+        {text = string.rep("-", 49), y = 17},
+        {text = "[F1] Back", y = 18, centered = true}
+    })
+end

@@ -1,0 +1,463 @@
+function handleMainLoopKeys(event, param)
+    if currentPage == 1 then
+        if param == keys.m then
+            currentPage = 2
+            currentFuncPage = 1
+            updateSystemFunctionsPage()
+        elseif param == keys.t then
+            toggleIris()
+            updateMainPage()
+        elseif param == keys.e then
+            emergencyShutdown()
+            updateMainPage()
+        elseif param == keys.f1 then
+            updateMainPage()
+        end
+    elseif currentPage == 2 then
+        if param == keys.f1 then
+            currentPage = 1
+            logAction("Returned to main page from System Functions")
+            updateMainPage()
+        elseif param == keys.p and currentFuncPage > 1 then
+            currentFuncPage = currentFuncPage - 1
+            logAction("Navigated to previous System Functions page: " .. currentFuncPage)
+            updateSystemFunctionsPage()
+        elseif param == keys.n and currentFuncPage < 5 then
+            currentFuncPage = currentFuncPage + 1
+            logAction("Navigated to next System Functions page: " .. currentFuncPage)
+            updateSystemFunctionsPage()
+        elseif currentFuncPage == 1 then
+            if param == keys.t then
+                toggleIris()
+                updateSystemFunctionsPage()
+            elseif param == keys.d then
+                disconnectGate()
+                updateSystemFunctionsPage()
+            elseif param == keys.g then
+                currentPage = 3
+                if handleDialingInput() then
+                    currentPage = 1
+                    updateMainPage()
+                else
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                end
+            elseif param == keys.a then
+                currentPage = 4
+                scrollPos = 1
+                selectedIndex = 1
+                updateAddressBookPage()
+            elseif param == keys.s then
+                currentPage = 6
+                scrollPos = 1
+                selectedIndex = 1
+                if handleGateSelectionInput() then
+                    currentPage = 1
+                    updateMainPage()
+                else
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                end
+            elseif param == keys.e then
+                currentPage = 7
+                if handleNameGateInput() then
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                else
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                end
+            elseif param == keys.f then
+                currentPage = 12
+                if handleSendMessageInput() then
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                else
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                end
+            elseif param == keys.m then
+                currentPage = 11
+                updateGateNetworkMap()
+            elseif param == keys.o then
+                handleAutoDialInput()
+                if currentPage == 1 then
+                    updateMainPage()
+                else
+                    updateSystemFunctionsPage()
+                end
+            elseif param == keys.p then
+                handleSignalTestInput()
+                updateSystemFunctionsPage()
+            end
+        elseif currentFuncPage == 2 then
+            if param == keys.l then
+                toggleLockdown()
+                updateSystemFunctionsPage()
+            elseif param == keys.u then
+                currentPage = 10
+                scrollPos = 1
+                selectedIndex = 1
+                if handleUserPermissionsInput() then
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                else
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                end
+            elseif param == keys.c then
+                currentPage = 13
+                updateCheckFuelPage()
+            elseif param == keys.i then
+                currentPage = 8
+                scrollPos = 1
+                updateDiagnosticsPage()
+            elseif param == keys.r then
+                config = {}
+                validateConfig()
+                saveConfig()
+                logAction("Configuration reset to defaults")
+                updateSystemFunctionsPage()
+            elseif param == keys.h then
+                currentPage = 14
+                scrollPos = 1
+                if handleGateHistoryInput() then
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                else
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                end
+            elseif param == keys.k then
+                handleGateScanInput()
+                updateSystemFunctionsPage()
+            elseif param == keys.b then
+                handlePowerBoostInput()
+                updateSystemFunctionsPage()
+            elseif param == keys.a then
+                currentPage = 16
+                if handleAppearanceSettingsInput() then
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                else
+                    currentPage = 2
+                    updateSystemFunctionsPage()
+                end
+            end
+        elseif currentFuncPage == 3 then
+            if param == keys.g then
+                handleGroupGates()
+                updateSystemFunctionsPage()
+            elseif param == keys.s then
+                handleScheduleDial()
+                updateSystemFunctionsPage()
+            end
+        end
+    elseif currentPage == 4 then
+        local addressList = {}
+        for name, data in pairs(addressBook) do
+            if name:lower():find(searchQuery:lower()) or data.code:lower():find(searchQuery:lower()) or (data.tag or ""):lower():find(searchQuery:lower()) then
+                table.insert(addressList, {name = name, code = data.code, isTrusted = data.isTrusted, tag = data.tag or ""})
+            end
+        end
+        for i, addr in ipairs(recentAddresses) do
+            if not addressBook[addr] and addr:lower():find(searchQuery:lower()) then
+                table.insert(addressList, {name = "Recent " .. i, code = addr, isTrusted = false, tag = ""})
+            end
+        end
+        if param == keys.f1 then
+            currentPage = 2
+            updateSystemFunctionsPage()
+        elseif param == keys.a then
+            currentPage = 5
+            if handleAddAddressInput() then
+                currentPage = 4
+                updateAddressBookPage()
+            else
+                currentPage = 4
+                updateAddressBookPage()
+            end
+        elseif param == keys.s then
+            saveAddressBook()
+            logAction("Address book saved")
+            updateAddressBookPage()
+        elseif param == keys.t and #addressList > 0 then
+            local entry = addressList[selectedIndex]
+            if entry then
+                addressBook[entry.name] = addressBook[entry.name] or {}
+                addressBook[entry.name].isTrusted = not (addressBook[entry.name].isTrusted or false)
+                logAction("Toggled trust for " .. entry.name .. " to " .. (addressBook[entry.name].isTrusted and "trusted" or "untrusted"))
+            end
+            updateAddressBookPage()
+        elseif param == keys.b and #addressList > 0 then
+            local entry = addressList[selectedIndex]
+            if entry then
+                if config.BLOCKED_ADDRESSES[entry.code] then
+                    config.BLOCKED_ADDRESSES[entry.code] = nil
+                    logAction("Unblocked address: " .. entry.code)
+                else
+                    config.BLOCKED_ADDRESSES[entry.code] = true
+                    logAction("Blocked address: " .. entry.code)
+                end
+                saveConfig()
+            end
+            updateAddressBookPage()
+        elseif param == keys.c then
+            addressBook = {}
+            scrollPos = 1
+            selectedIndex = 1
+            logAction("Address book cleared")
+            updateAddressBookPage()
+        elseif param == keys.d and #addressList > 0 then
+            local entry = addressList[selectedIndex]
+            if entry then
+                dialGate(entry.code)
+            end
+            currentPage = 1
+            updateMainPage()
+        elseif param == keys.q then
+            currentPage = 9
+            if handleSearchInput() then
+                currentPage = 4
+                updateAddressBookPage()
+            else
+                currentPage = 4
+                updateAddressBookPage()
+            end
+        elseif param == keys.up and selectedIndex > 1 then
+            selectedIndex = selectedIndex - 1
+            if selectedIndex < scrollPos then scrollPos = selectedIndex end
+            updateAddressBookPage()
+        elseif param == keys.down and selectedIndex < #addressList then
+            selectedIndex = selectedIndex + 1
+            if selectedIndex > scrollPos + maxVisibleLines - 1 then scrollPos = selectedIndex - maxVisibleLines + 1 end
+            updateAddressBookPage()
+        end
+    end
+end
+
+function handleSendMessageInput()
+    dialingAddress = ""
+    registerInput(12, keys.enter, function(event, param)
+        if #dialingAddress > 0 then
+            if gateName and gateStatus == "Connected" then
+                local success, result = pcall(function()
+                    modem.callRemote(gateName, "sendMessage", dialingAddress)
+                end)
+                if success then
+                    logAction("Sent message through " .. gateName .. ": " .. dialingAddress)
+                    dialingAddress = ""
+                    currentPage = 2
+                    return true
+                else
+                    term.setCursorPos(4, 9)
+                    term.setTextColor(config.UI_COLORS.warning)
+                    term.write("Send failed! Check logs.")
+                    term.setTextColor(config.UI_COLORS.text or colors.white)
+                    logAction("Message send error: " .. tostring(result))
+                    sleep(1)
+                end
+            else
+                term.setCursorPos(4, 9)
+                term.setTextColor(config.UI_COLORS.warning)
+                term.write("Gate not connected!")
+                term.setTextColor(config.UI_COLORS.text or colors.white)
+                sleep(1)
+            end
+        end
+    end)
+    registerInput(12, keys.backspace, function(event, param)
+        if #dialingAddress > 0 then
+            dialingAddress = dialingAddress:sub(1, -2)
+        end
+    end)
+    return handleInputLoop(updateSendMessagePage, 12)
+end
+
+function handleAutoDialInput()
+    if gateName and config.AUTO_DIAL_ADDRESS then
+        if isValidAddress(config.AUTO_DIAL_ADDRESS) then
+            if dialGate(config.AUTO_DIAL_ADDRESS) then
+                logAction("Auto-dialed: " .. config.AUTO_DIAL_ADDRESS)
+                currentPage = 1
+            else
+                term.setCursorPos(4, 11)
+                term.setTextColor(config.UI_COLORS.warning)
+                term.write("Auto-dial failed!")
+                term.setTextColor(config.UI_COLORS.text or colors.white)
+                sleep(1)
+                currentPage = 2
+            end
+        else
+            term.setCursorPos(4, 11)
+            term.setTextColor(config.UI_COLORS.warning)
+            term.write("Invalid auto-dial address!")
+            term.setTextColor(config.UI_COLORS.text or colors.white)
+            sleep(1)
+            currentPage = 2
+        end
+    else
+        term.setCursorPos(4, 11)
+        term.setTextColor(config.UI_COLORS.warning)
+        term.write(gateName and "No auto-dial address set!" or "No gate selected!")
+        term.setTextColor(config.UI_COLORS.text or colors.white)
+        sleep(1)
+        currentPage = 2
+    end
+end
+
+function handleSignalTestInput()
+    if not gateName then
+        term.setCursorPos(4, 11)
+        term.setTextColor(config.UI_COLORS.warning)
+        term.write("No gate selected!")
+        term.setTextColor(config.UI_COLORS.text or colors.white)
+        sleep(1)
+    else
+        local success, fuel, iris = pcall(function()
+            return modem.callRemote(gateName, "energyAvailable") or 0,
+                   modem.callRemote(gateName, "irisState") == "Open"
+        end)
+        if success then
+            local displayFuel = gateStatus == "Connected" and fuel or fuelGauge
+            local displayIris = gateStatus == "Connected" and iris or irisState
+            logAction("Signal test (" .. (gateStatus == "Connected" and "remote" or "local") .. "): Fuel " .. displayFuel .. " SU, Iris " .. (displayIris and "Open" or "Closed"))
+            term.setCursorPos(4, 11)
+            term.write((gateStatus == "Connected" and "Remote" or "Local") .. ": Fuel " .. displayFuel .. ", Iris " .. (displayIris and "Open" or "Closed"))
+            sleep(2)
+        else
+            logAction("Signal test error: " .. tostring(fuel))
+            term.setCursorPos(4, 11)
+            term.setTextColor(config.UI_COLORS.warning)
+            term.write("Test failed! Check logs.")
+            term.setTextColor(config.UI_COLORS.text or colors.white)
+            sleep(1)
+        end
+    end
+    currentPage = 2
+end
+
+function handleSetAlarmInput()
+    registerInput(15, keys.t, function(event, param)
+        config.ALARM_ENABLED = not (config.ALARM_ENABLED or false)
+        if saveConfig() then
+            logAction("Alarm " .. (config.ALARM_ENABLED and "enabled" or "disabled"))
+        else
+            term.setCursorPos(4, 9)
+            term.setTextColor(config.UI_COLORS.warning)
+            term.write("Save failed! Check logs.")
+            term.setTextColor(config.UI_COLORS.text or colors.white)
+            sleep(1)
+        end
+    end)
+    return handleInputLoop(updateSetAlarmPage, 15)
+end
+
+function handleGateScanInput()
+    findGates()
+    logAction("Gate scan completed: " .. #stargates .. " gates found")
+    term.setCursorPos(4, 11)
+    term.write("Scan complete: " .. #stargates .. " gates")
+    sleep(1)
+    currentPage = 2
+end
+
+function handlePowerBoostInput()
+    if gateName then
+        local success, result = pcall(function()
+            modem.callRemote(gateName, "boostPower", 50000)
+        end)
+        if success then
+            logAction("Power boosted on " .. gateName)
+            term.setCursorPos(4, 11)
+            term.write("Power boosted!")
+            sleep(1)
+        else
+            logAction("Power boost error: " .. tostring(result))
+            term.setCursorPos(4, 11)
+            term.setTextColor(config.UI_COLORS.warning)
+            term.write("Boost failed! Check logs.")
+            term.setTextColor(config.UI_COLORS.text or colors.white)
+            sleep(1)
+        end
+    else
+        term.setCursorPos(4, 11)
+        term.setTextColor(config.UI_COLORS.warning)
+        term.write("No gate selected!")
+        term.setTextColor(config.UI_COLORS.text or colors.white)
+        sleep(1)
+    end
+    currentPage = 2
+end
+
+function handleAppearanceSettingsInput()
+    local colorsList = {
+        colors.white, colors.orange, colors.magenta, colors.lightBlue,
+        colors.yellow, colors.lime, colors.pink, colors.gray,
+        colors.lightGray, colors.cyan, colors.purple, colors.blue,
+        colors.brown, colors.green, colors.red, colors.black
+    }
+    
+    registerInput(16, keys.b, function(event, param)
+        local currentIdx = 1
+        for i, c in ipairs(colorsList) do
+            if c == config.UI_COLORS.borders then currentIdx = i end
+        end
+        config.UI_COLORS.borders = colorsList[(currentIdx % #colorsList) + 1]
+        saveConfig()
+    end)
+    registerInput(16, keys.t, function(event, param)
+        local currentIdx = 1
+        for i, c in ipairs(colorsList) do
+            if c == config.UI_COLORS.text then currentIdx = i end
+        end
+        config.UI_COLORS.text = colorsList[(currentIdx % #colorsList) + 1]
+        saveConfig()
+    end)
+    registerInput(16, keys.u, function(event, param)
+        local currentIdx = 1
+        for i, c in ipairs(colorsList) do
+            if c == config.UI_COLORS.buttons then currentIdx = i end
+        end
+        config.UI_COLORS.buttons = colorsList[(currentIdx % #colorsList) + 1]
+        saveConfig()
+    end)
+    registerInput(16, keys.w, function(event, param)
+        local currentIdx = 1
+        for i, c in ipairs(colorsList) do
+            if c == config.UI_COLORS.warning then currentIdx = i end
+        end
+        config.UI_COLORS.warning = colorsList[(currentIdx % #colorsList) + 1]
+        saveConfig()
+    end)
+    registerInput(16, keys.s, function(event, param)
+        term.setCursorPos(4, 13)
+        term.write("Sync Interval (0.1-5): ")
+        local input = read()
+        local num = tonumber(input)
+        if num and num >= 0.1 and num <= 5 then
+            config.SYNC_INTERVAL = num
+            saveConfig()
+        else
+            term.setTextColor(config.UI_COLORS.warning)
+            term.write(" Invalid! ")
+            term.setTextColor(config.UI_COLORS.text or colors.white)
+            sleep(1)
+        end
+    end)
+    return handleInputLoop(updateAppearanceSettingsPage, 16)
+end
+
+function handleGroupGates()
+    -- Placeholder for grouping gates
+    term.setCursorPos(4, 11)
+    term.write("Grouping gates (placeholder)")
+    sleep(1)
+end
+
+function handleScheduleDial()
+    -- Placeholder for scheduling a dial
+    term.setCursorPos(4, 11)
+    term.write("Scheduling dial (placeholder)")
+    sleep(1)
+end

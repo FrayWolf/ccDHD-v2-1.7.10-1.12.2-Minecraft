@@ -1,0 +1,87 @@
+function drawFancyBorders()
+    -- Clears screen and draws styled borders
+    term.clear()
+    local width = 51
+    local height = 19
+    local borderColor = config.UI_COLORS.borders or colors.blue
+
+    term.setBackgroundColor(borderColor)
+    term.setCursorPos(1, 1)
+    term.write("#" .. string.rep("-", width - 2) .. "#")
+
+    for y = 2, height - 1 do
+        term.setBackgroundColor(borderColor)
+        term.setCursorPos(1, y)
+        term.write("|" .. string.rep(" ", width - 2) .. "|")
+    end
+
+    term.setBackgroundColor(borderColor)
+    term.setCursorPos(1, height)
+    term.write("#" .. string.rep("-", width - 2) .. "#")
+
+    term.setBackgroundColor(colors.black)
+    for y = 2, height - 1 do
+        term.setCursorPos(2, y)
+        term.write(string.rep(" ", width - 2))
+    end
+    term.setTextColor(config.UI_COLORS.text or colors.white)
+end
+
+function drawPage(title, elements)
+    -- Draws a page with a title and dynamic elements
+    drawFancyBorders()
+    local width = 49
+    term.setCursorPos(math.floor((width - #title) / 2) + 2, 2)
+    term.write(title)
+    for _, element in ipairs(elements) do
+        if not element.condition or element.condition() then
+            local x = element.centered and math.floor((width - #element.text) / 2) + 2 or (element.x or 4)
+            term.setCursorPos(x, element.y)
+            if element.color then
+                term.setTextColor(element.color)
+            end
+            if element.bgColor then
+                term.setBackgroundColor(element.bgColor)
+                term.write(element.text .. " ")
+                term.setBackgroundColor(colors.black)
+            else
+                term.write(element.text)
+            end
+            if element.color then
+                term.setTextColor(config.UI_COLORS.text or colors.white)
+            end
+        end
+    end
+end
+
+function updateMainPage()
+    local rawFuel = callGateMethod(gateName, "energy") or fuelGauge or 0
+    local fuelDisplay = isVersion1122 and tostring(rawFuel) .. " RF" or math.floor((rawFuel / maxFuel) * 100) .. "% (SU)"
+    local gateActivationStr = "Gate Activation: None"
+    if gateStatus == "Connected" then
+        if dialAddress ~= "none" then
+            gateActivationStr = "Gate Activation: " .. dialAddress .. " Active"
+        elseif incomingAddress ~= "none" then
+            gateActivationStr = "Gate Activation: " .. incomingAddress .. " Active"
+        end
+    end
+    drawPage("DHD Command", {
+        {text = string.rep("-", 49), y = 3},
+        {text = "Gate: " .. (config.gateNames[gateName] or gateName or "None"), y = 4, centered = true},
+        {text = "Address: " .. localAddress, y = 6, centered = true},
+        {text = "Distance: " .. calculateGateDistance(), y = 7, centered = true},
+        {text = "Status: ", y = 8, centered = true},
+        {text = gateStatus, y = 8, x = math.floor((49 - #("Status: " .. gateStatus)) / 2) + 2 + #"Status: ", color = gateStatus == "Connected" and colors.green or config.UI_COLORS.warning},
+        {text = "System Gates: " .. tostring(#stargates), y = 10, centered = true},
+        {text = "Iris: " .. (irisState and "Open" or "Closed"), y = 12, centered = true},
+        {text = gateActivationStr, y = 14, centered = true},
+        {text = "Power: ", y = 16, centered = true},
+        {text = fuelDisplay, y = 16, x = math.floor((49 - #("Power: " .. fuelDisplay)) / 2) + 2 + #"Power: ", color = rawFuel <= (config.FUEL_WARNING_THRESHOLD * (isVersion1122 and 10000 or maxFuel / 100)) and config.UI_COLORS.warning or config.UI_COLORS.text},
+        {text = "Security: ", y = 17, centered = true},
+        {text = secureStatus, y = 17, x = math.floor((49 - #("Security: " .. secureStatus)) / 2) + 2 + #"Security: ", color = secureStatus == "intruder" and config.UI_COLORS.warning or secureStatus == "incoming" and colors.yellow or secureStatus == "blocked" and colors.orange or colors.green},
+        {text = "LOCKDOWN", y = 18, centered = true, color = config.UI_COLORS.warning, condition = function() return config.LOCKDOWN_MODE end},
+        {text = string.rep("-", 49), y = 18, condition = function() return not config.LOCKDOWN_MODE end},
+        {text = "[E]mergency", y = 19, x = 3, color = colors.red},
+        {text = "[M]enu", y = 19, x = 43, color = colors.yellow}
+    })
+end

@@ -1,0 +1,144 @@
+function generateRandomPassword(length)
+    -- Generates a random password of specified length
+    local chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*"
+    local password = ""
+    for i = 1, length or 8 do
+        local rand = math.random(1, #chars)
+        password = password .. chars:sub(rand, rand)
+    end
+    return password
+end
+
+function generateRecoveryCode()
+    -- Generates a 6-character recovery code
+    return generateRandomPassword(6)
+end
+
+function saveRecoveryCode(code)
+    -- Saves recovery code with XOR encryption
+    local success, result = pcall(function()
+        local file = fs.open("recovery_code.txt", "w")
+        if file then
+            local encrypted = encryptXOR(code, config.ENCRYPTION_KEY)
+            file.write(encrypted)
+            file.close()
+            logAction("Recovery code saved securely")
+            return true
+        else
+            logAction("Failed to open recovery_code.txt for writing")
+            return false
+        end
+    end)
+    if not success then
+        logAction("Error saving recovery code: " .. tostring(result))
+        return false
+    end
+    return result
+end
+
+function loadRecoveryCode()
+    -- Loads and decrypts recovery code
+    local success, result = pcall(function()
+        if fs.exists("recovery_code.txt") then
+            local file = fs.open("recovery_code.txt", "r")
+            if file then
+                local encrypted = file.readAll()
+                file.close()
+                return encryptXOR(encrypted, config.ENCRYPTION_KEY)
+            else
+                logAction("Failed to open recovery_code.txt for reading")
+                return nil
+            end
+        end
+        return nil
+    end)
+    if not success then
+        logAction("Error loading recovery code: " .. tostring(result))
+        return nil
+    end
+    return result
+end
+
+function encryptXOR(str, key)
+    -- Simple XOR encryption/decryption with a key
+    local result = ""
+    for i = 1, #str do
+        local strByte = str:byte(i)
+        local keyByte = key:byte((i - 1) % #key + 1)
+        result = result .. string.char(bit32.bxor(strByte, keyByte))
+    end
+    return result
+end
+
+function readPassword(prompt)
+    -- Reads password input with masking
+    term.write(prompt)
+    local password = ""
+    local x, y = term.getCursorPos()
+    while true do
+        local event, param = os.pullEvent()
+        if event == "char" then
+            password = password .. param
+            term.setCursorPos(x, y)
+            term.write(string.rep("*", #password))
+        elseif event == "key" then
+            if param == keys.enter then break
+            elseif param == keys.backspace and #password > 0 then
+                password = password:sub(1, -2)
+                term.setCursorPos(x, y)
+                term.write(string.rep("*", #password) .. " ")
+            end
+        end
+    end
+    term.write("\n")
+    return password
+end
+
+function initializeFile(filename, defaultData, isAppend)
+    -- Initializes a file with default data if it doesn't exist
+    if not fs or not fs.exists or not fs.open then
+        logAction("Error: Filesystem API (fs) not available")
+        return false
+    end
+    local success, result = pcall(function()
+        if not fs.exists(filename) then
+            local file = fs.open(filename, isAppend and "a" or "w")
+            if not file then 
+                logAction("Failed to create file: " .. filename)
+                return false 
+            end
+            if defaultData then
+                file.write(isAppend and ("Stargate Log - Initialized at " .. (os.time and os.time() or "unknown") .. "\n") or textutils.serialize(defaultData))
+            end
+            file.close()
+            logAction("Initialized file: " .. filename)
+            return true
+        end
+        return true
+    end)
+    if not success then
+        logAction("Error initializing " .. filename .. ": " .. tostring(result))
+        return false
+    end
+    return result
+end
+
+function logAction(action)
+    -- Logs an action to the log file
+    if not initializeFile(config.LOG_FILE or "gate_log.txt", nil, true) then return end
+    local success, result = pcall(function()
+        local file = fs.open(config.LOG_FILE or "gate_log.txt", "a")
+        if not file then 
+            print("Warning: Could not log action - file inaccessible")
+            return 
+        end
+        local entry = tostring(os.time and os.time() or "unknown") .. " - " .. (action or "Unknown action")
+        file.writeLine(entry)
+        file.close()
+        table.insert(logEntries, 1, entry)
+        if #logEntries > 100 then table.remove(logEntries, 101) end
+    end)
+    if not success then
+        print("Warning: Logging failed - " .. tostring(result))
+    end
+end

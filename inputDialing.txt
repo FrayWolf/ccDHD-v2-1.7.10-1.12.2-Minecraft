@@ -1,0 +1,78 @@
+function handleDialingInput()
+    dialingAddress = ""
+    registerInput(3, keys.enter, function(event, param)
+        if dialingAddress ~= "" then
+            if isValidAddress(dialingAddress) then
+                if dialGate(dialingAddress) then
+                    currentPage = 1
+                    dialingAddress = ""
+                    return true
+                else
+                    term.setCursorPos(4, 9)
+                    term.setTextColor(config.UI_COLORS.warning)
+                    term.write("Dial failed! Check logs.")
+                    term.setTextColor(config.UI_COLORS.text or colors.white)
+                    sleep(1)
+                end
+            else
+                term.setCursorPos(4, 9)
+                term.setTextColor(config.UI_COLORS.warning)
+                term.write("Invalid address length!")
+                term.setTextColor(config.UI_COLORS.text or colors.white)
+                sleep(1)
+            end
+        end
+    end)
+    registerInput(3, keys.backspace, function(event, param)
+        if #dialingAddress > 0 then
+            dialingAddress = dialingAddress:sub(1, -2)
+        end
+    end)
+    return handleInputLoop(updateDialingPage, 3)
+end
+
+function handleAddAddressInput()
+    addressName = ""
+    addressCode = ""
+    local enteringName = true
+    registerInput(5, keys.enter, function(event, param)
+        if enteringName and addressName ~= "" then
+            enteringName = false
+        elseif not enteringName and isValidAddress(addressCode) then
+            addressBook[addressName] = {code = addressCode, isTrusted = false, tag = ""}
+            logAction("Added address: " .. addressName .. " (" .. addressCode .. ")")
+            currentPage = 4
+            addressName = ""
+            addressCode = ""
+            return true
+        elseif not enteringName then
+            term.setCursorPos(4, 11)
+            term.setTextColor(config.UI_COLORS.warning)
+            term.write("Invalid address length!")
+            term.setTextColor(config.UI_COLORS.text or colors.white)
+            sleep(1)
+        end
+    end)
+    registerInput(5, keys.backspace, function(event, param)
+        if enteringName and #addressName > 0 then
+            addressName = addressName:sub(1, -2)
+        elseif not enteringName and #addressCode > 0 then
+            addressCode = addressCode:sub(1, -2)
+        end
+    end)
+    return handleInputLoop(updateAddAddressPage, 5)
+end
+
+function handleSearchInput()
+    searchQuery = ""
+    registerInput(9, keys.enter, function(event, param)
+        currentPage = 4
+        return true
+    end)
+    registerInput(9, keys.backspace, function(event, param)
+        if #searchQuery > 0 then
+            searchQuery = searchQuery:sub(1, -2)
+        end
+    end)
+    return handleInputLoop(updateSearchPage, 9)
+end

@@ -1,0 +1,80 @@
+function loadAddressBook()
+    -- Loads address book from file or initializes with defaults
+    if not initializeFile("addressBook.txt", config.DEFAULT_ADDRESSES or {}) then
+        addressBook = config.DEFAULT_ADDRESSES or {}
+        saveAddressBook()
+        logAction("Initialized new address book with defaults")
+    else
+        local success, result = pcall(function()
+            local file = fs.open("addressBook.txt", "r")
+            if file then
+                local loaded = textutils.unserialize(file.readAll()) or {}
+                file.close()
+                addressBook = {}
+                for name, value in pairs(loaded) do
+                    if isValidAddressEntry(name, value) then
+                        addressBook[name] = {code = value.code, isTrusted = value.isTrusted or false, tag = value.tag or ""}
+                    else
+                        logAction("Skipped invalid address entry: " .. name)
+                    end
+                end
+                logAction("Address book loaded with " .. tableSize(addressBook) .. " entries")
+            else
+                addressBook = config.DEFAULT_ADDRESSES or {}
+                logAction("Failed to read addressBook.txt, using defaults")
+                saveAddressBook()
+            end
+        end)
+        if not success then
+            logAction("Error loading address book: " .. tostring(result))
+            addressBook = config.DEFAULT_ADDRESSES or {}
+            saveAddressBook()
+        end
+    end
+end
+
+function saveAddressBook()
+    -- Saves address book to file
+    if not textutils or not textutils.serialize then 
+        logAction("Address book save failed: textutils.serialize unavailable")
+        return false 
+    end
+    local success, result = pcall(function()
+        local file = fs.open("addressBook.txt", "w")
+        if file then
+            file.write(textutils.serialize(addressBook))
+            file.close()
+            logAction("Address book saved with " .. tableSize(addressBook) .. " entries")
+            return true
+        else
+            logAction("Address book save failed: Unable to open file")
+            return false
+        end
+    end)
+    if not success then
+        logAction("Error saving address book: " .. tostring(result))
+        return false
+    end
+    return result
+end
+
+function isValidAddress(address)
+    -- Validates address format and length
+    return address and #address >= (config.ADDRESS_MIN_LENGTH or 6) and #address <= (config.ADDRESS_MAX_LENGTH or 9) and address:match(config.ADDRESS_PATTERN or "^[A-Z0-9]+$")
+end
+
+function isValidAddressEntry(name, value)
+    -- Checks if an address book entry is valid
+    return type(name) == "string" and #name > 0 and
+           type(value) == "table" and
+           type(value.code) == "string" and isValidAddress(value.code) and
+           (value.isTrusted == nil or type(value.isTrusted) == "boolean") and
+           (value.tag == nil or type(value.tag) == "string")
+end
+
+function tableSize(tbl)
+    -- Returns the size of a table
+    local count = 0
+    for _ in pairs(tbl) do count = count + 1 end
+    return count
+end
